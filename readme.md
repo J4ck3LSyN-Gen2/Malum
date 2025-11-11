@@ -28,8 +28,8 @@
 
 1.  **Clone the repository:**
     ```sh
-    git clone https://github.com/
-    cd nephila
+    git clone https://github.com/J4ck3LSyN-Gen2/Malum.git
+    cd malum
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -349,4 +349,5 @@ except PermissionError as e:
 *   **License**: MIT
 
 ---
+
 [Back to the Top](#about-nehphila)
