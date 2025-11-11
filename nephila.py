@@ -37,7 +37,7 @@ class nephila:
             self.noAdmin = self.args.no_admin
             if not self.noAdmin: self._initImports()
             else: self.customLogPipe("Running in --no-admin mode. Scapy-dependent features are disabled.",level=2)
-        self.customLogPipe(f"Finished initializing nephila({str(__version__)}).")
+            self.customLogPipe(f"Finished initializing nephila({str(__version__)}).")
 
     class proxify:
 
