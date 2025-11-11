@@ -13,7 +13,6 @@
 <p align="center">
   <img src="imgs/icon.png" width="400">
 </p>
----
 
 ## Global Index
 
@@ -348,6 +347,7 @@ except PermissionError as e:
 ---
 
 [Back to the Top](#about-nehphila)
+
 
 
 
