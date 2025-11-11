@@ -1250,13 +1250,13 @@ def raiseBanner():
         '║      │   ╰→──→──→╯   │   └────────┴────────┘ ║', 
         '║      ╰←──←──←─←──←──←╯                       ║', 
         '╠════════════════════╦╗  ╔╦════════════════════╣', 
-        '║  O C C U L T U M   ║╠{}╣║   S C I E N T I A  ║', 
+        '║  O C C U L T U M   ║╠0A╣║   S C I E N T I A  ║', 
         '╚════════════════════╩╝  ╚╩════════════════════╝ ']
     bannerStr = "\n".join(banner)
     bannerStr = f"{colorama.Style.BRIGHT}{bannerStr}"
     for i in ["║","╚","═","╝","╔","╗","╣","╠","╦","╩"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.CYAN}{colorama.Style.DIM}{i}{colorama.Style.RESET_ALL}{colorama.Style.BRIGHT}")
     for i in ["S C I E N T I A", "𝐍 𝐄 𝐏 𝐇 𝐈 𝐋 𝐀", "O C C U L T U M", "╳"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.LIGHTRED_EX}{i}{colorama.Fore.RESET}")
-    for i in ["ROOT","FIRE","WALL","IDS/EDR","WAF","LAN","EXTERNAL","PASSWD","GIBSON"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.BLUE}{i}{colorama.Fore.RESET}")
+    for i in ["ROOT","FIRE","WALL","IDS/EDR","WAF","LAN","EXTERNAL","PASSWD","GIBSON","0A"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.BLUE}{i}{colorama.Fore.RESET}")
     for i in ["─","╰","╭","╯","╮","│","┴","┐","┌","┬","┼","┤","├","┘","└",'{','}']: bannerStr = bannerStr.replace(i,f"{colorama.Fore.BLACK}{i}{colorama.Fore.RESET}")
     for i in ["┆"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.LIGHTRED_EX}{i}{colorama.Fore.RESET}")
     for i in ["↔","↕"]: bannerStr = bannerStr.replace(i,f"{colorama.Fore.LIGHTWHITE_EX}{i}{colorama.Fore.RESET}")
