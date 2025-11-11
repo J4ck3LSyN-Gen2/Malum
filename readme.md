@@ -70,10 +70,6 @@
 
 
 
-<p align="center">
-  <img src="imgs/nephilaUsage.png">
-</p>
-
 ---
 
 **Nephila** is a modernized, multi-faceted tool designed for information gathering, network analysis, and security operations. It provides a suite of modules for tasks ranging from proxy management and port scanning to sophisticated firewall evasion and man-in-the-middle traffic capture. This tool is built to be an executable CLI or can be used pythonically.
@@ -351,4 +347,5 @@ except PermissionError as e:
 ---
 
 [Back to the Top](#about-nehphila)
+
 
