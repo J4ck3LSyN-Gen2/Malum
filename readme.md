@@ -14,6 +14,8 @@
   <img src="imgs/icon.png" width="400">
 </p>
 
+---
+
 ## Global Index
 
 - [Nephila](#nephila)
@@ -26,8 +28,8 @@
 
 1.  **Clone the repository:**
     ```sh
-    git clone https://github.com/J4ck3LSyN-Gen2/Malum.git
-    cd malum
+    git clone https://github.com/
+    cd nephila
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -66,8 +68,10 @@
   "𝔗𝔥𝔢 𝔴𝔢𝔞𝔳𝔢𝔯 𝔬𝔣 𝔴𝔢𝔟𝔰, 𝔪𝔞𝔰𝔱𝔢𝔯 𝔬𝔣 𝔫𝔢𝔱𝔴𝔬𝔯k𝔰 𝔞𝔫𝔡 𝔲𝔫𝔰𝔢𝔢𝔫 𝔠𝔬𝔫𝔫𝔢𝔠𝔱𝔦𝔬𝔫𝔰; 𝔞 𝔰𝔢𝔫𝔱𝔦𝔫𝔢𝔩 𝔬𝔣 𝔞𝔫𝔞𝔩𝔶𝔰𝔦𝔰 𝔞𝔫𝔡 𝔭𝔯𝔬x79 𝔪𝔞𝔫𝔦𝔭𝔲𝔩𝔞𝔱𝔦𝔬𝔫 𝔱𝔥𝔞𝔱 𝔰𝔭𝔦𝔫𝔰 𝔦𝔫𝔱𝔢𝔩𝔩𝔦𝔤𝔢𝔫𝔠𝔢 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔱𝔥𝔯𝔢𝔞𝔡𝔰 𝔬𝔣 𝔱𝔯𝔞𝔣𝔣𝔦𝔠 𝔞𝔫𝔡 𝔡𝔞𝔱𝔞 𝔣𝔩𝔬𝔴, 𝔯𝔢𝔳𝔢𝔞𝔩𝔦𝔫𝔤 𝔴𝔥𝔞𝔱 𝔩𝔲𝔯𝔨𝔰 𝔴𝔦𝔱𝔥𝔦n 𝔱𝔥𝔢 𝔫𝔢𝔱’𝔰 𝔡𝔢𝔰𝔦𝔤𝔫."
 </p>
 
+
+
 <p align="center">
-  <img src="imgs/nephilaUsageUpdated.png">
+  <img src="imgs/nephilaUsage.png">
 </p>
 
 ---
@@ -99,10 +103,12 @@
     - [Firewall Evasive Packet Fragmentation (`firewall-frag`)](#nephila-firewall-fragmentation)
     - [DNS Enumeration](#nephila-dns-enumeration)
     - [MITM Capture](#nephila-mitm-capture)
+    - [nmap Scanner](#nephila-nmap-scanner)
   - [Python Library](#nephila-as-a-python-library)
     - [Proxy Manager (`proxify`)](#nephila-proxy-manager-pythonic)
     - [Port Scanner (`baseScanner`)](#nephila-port-scanner-pythonic)
     - [Firewall Evasive Packet Fragmentation (`firewallFrag`)](#nephilas-send-fragmented-packet-funcitonality-pythonic)
+    - [nmap Scanner](#nephila-nmap-pythonic)
 ---
 
 ## Nephila Notices
@@ -336,6 +342,42 @@ except PermissionError as e:
 
 ```
 
+### Nephila NMAP Scanner
+
+```sh
+usage: nephila.py nmap [-h] [-p PORTS] [-a ARGS] [--su] [-v] [-o] targets
+
+positional arguments:
+  targets               Target hosts to scan, comma-separated.
+
+options:
+  -h, --help            show this help message and exit
+  -p PORTS, --ports PORTS
+                        Ports to scan (e.g., '80,443', '1-1000').
+  -a ARGS, --args ARGS  Nmap arguments, colon-separated (e.g., 'sV:O:T4').
+  --su                  Run nmap with sudo (for OS detection, etc.).
+  -v, --verbose         Enable verbose output during scan.
+  -o, --output          Write XML output to a file in the 'nmapScanOutput' directory.
+```
+
+### Nephila NMAP Pythonic
+
+```python
+# This example requires nmap to be installed on your system.
+# Initialize the nmap scanner
+nmapScanner = n.nmap(n)
+# Configure it to write output files
+nmapScanner.config['writeFile'] = True
+print("Running Nmap scan...")
+results = nmapScanner.scan(
+    targets="scanme.nmap.org", # Can be [str,...] or seperated via host1,host2,...
+    ports="22,80", # Can be [str,...] or seperated via port1,port2,... or ranged via 1-65535
+    args="sV:A", # Service version and Aggressive scan options
+    su=True, # Use sudo for more scan types (does nothing on windows)
+    verbose=True # Verbosity
+)
+print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
+```
 ## Credits
 
 <img src="https://tryhackme-badges.s3.amazonaws.com/J4ck3LSyN.png" alt="Your Image Badge" />
@@ -345,10 +387,4 @@ except PermissionError as e:
 *   **License**: MIT
 
 ---
-
-[Back to the Top](#about-nehphila)
-
-
-
-
-
+[Back to the Top](#about)

@@ -2,4 +2,5 @@ scapy
 colorama
 alive_progress
 dnspython
-httpx
+beautifulSoup4
+urljoin

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import time, threading, socket, logging, random, sys, datetime, asyncio
-import colorama, argparse, json, os, string, httpx, hashlib # type: ignore
+import colorama, argparse, json, os, string, httpx, hashlib, subprocess # type: ignore
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from xml.etree import ElementTree as ET
 from typing import Dict, Any, Union, Tuple, Optional, List
 __author__  = "J4ck3LSyN";__version__ = "0.1.0"
 class nephilaLoggingFormatter(logging.Formatter):
@@ -39,6 +40,154 @@ class nephila:
             else: self.customLogPipe("Running in --no-admin mode. Scapy-dependent features are disabled.",level=2)
             self.customLogPipe(f"Finished initializing nephila({str(__version__)}).")
 
+    class nmap:
+        def __init__(self, NSI: callable):
+            self.nS = NSI
+            self.customLogPipe = self.nS.customLogPipe
+            self.history = {}
+            self.config = {
+                "minPort": 1,
+                "maxPort": 1000,
+                "path": "nmapScanOutput",
+                "writeFile": False
+            }
+
+        def _spawnProcess(self,target: str,portStr: str = None,argStr: str = None,su: bool = False) -> str:
+            """Execute nmap and return XML output"""
+            base = "nmap ";end = "-oX -";cmd = base
+            if portStr: cmd += f"-p {portStr} "
+            if argStr: cmd += argStr + " "
+            cmd += target + " " + end
+            try:
+                if su: cmd = f"sudo {cmd}" if str(sys.platform).startswith('lin') else f"{cmd}"
+                result = subprocess.run(cmd,shell=True,capture_output=True,text=True,timeout=300)
+                if result.returncode != 0:
+                    self.customLogPipe(f"nmap error: {result.stderr}",level=2);return None
+                return result.stdout
+            except subprocess.TimeoutExpired:
+                self.customLogPipe("nmap scan timeout",level=2);return None
+            except Exception as e:
+                self.customLogPipe(f"Process spawn error: {str(e)}",level=2);return None
+
+        def _argParse(self, args: str) -> str:
+            """Parse args separated by ':' into nmap flag string"""
+            if not args: return ""
+            flags = args.split(':');parsed = []
+            for flag in flags:
+                if flag.strip():
+                    # Add '-' prefix if not present
+                    if not flag.startswith('-'): parsed.append(f"-{flag}")
+                    else: parsed.append(flag)
+            return " ".join(parsed)
+
+        def _parseXML(self, xmlString: str) -> Dict[str, Any]:
+            """Parse nmap XML output into dictionary"""
+            try:
+                root = ET.fromstring(xmlString)
+                scanData = {
+                    "hosts": [],
+                    "scan_info": {
+                        "start": root.get("startstr"),
+                        "end": root.get("endstr"),
+                        "summary": root.find("runstats/finished").get("summary") if root.find("runstats/finished") is not None else None
+                    }
+                }
+                # Parse hosts
+                for host in root.findall("host"):
+                    hostData = {"status": host.find("status").get("state"),"ports": [],"os": []}
+                    # Get IP address
+                    ipElement = host.find("address[@addrtype='ipv4']")
+                    if ipElement is None: ipElement = host.find("address[@addrtype='ipv6']")
+                    if ipElement is not None: hostData["ip"] = ipElement.get("addr")
+                    # Get hostname
+                    hostnames = host.find("hostnames")
+                    if hostnames is not None:
+                        hostname = hostnames.find("hostname")
+                        if hostname is not None: hostData["hostname"] = hostname.get("name")
+                    # Parse ports
+                    ports = host.find("ports")
+                    if ports is not None:
+                        for port in ports.findall("port"):
+                            portDict = {"protocol": port.get("protocol"),"port": int(port.get("portid")),"state": port.find("state").get("state"),"service": {}}
+                            service = port.find("service")
+                            if service is not None:
+                                portDict["service"] = {"name": service.get("name"),"product": service.get("product"),"version": service.get("version")}
+                            hostData["ports"].append(portDict)
+                    # Parse OS detection
+                    osmatch = host.find("os/osmatch")
+                    if osmatch is not None:
+                        hostData["os"] = {
+                            "name": osmatch.get("name"),
+                            "accuracy": osmatch.get("accuracy")
+                        }
+                    scanData["hosts"].append(hostData)
+                return scanData
+            except ET.ParseError as e:
+                self.customLogPipe(f"XML parse error: {str(e)}",level=2)
+                return None
+
+        def scan(self,
+                 targets: str | List[str],
+                 ports: str | int | List[str | int] = None,
+                 args: str = None,
+                 kwargs: Dict[str, Any] = None,
+                 verbose: bool = False,
+                 su: bool = False) -> Dict[str, Any]:
+            """Execute nmap scan and return parsed results"""
+            # Split targets
+            if not isinstance(targets, list): targets = targets.split(',') if "," in targets else [targets]
+            # Process ports
+            ports = ports if ports else [f"{self.config['minPort']}-{self.config['maxPort']}"]
+            if not isinstance(ports, list): ports = [str(ports)]
+            portString = ports[0] if len(ports) == 1 else ""
+            if not portString:
+                portInt = []
+                ranges = []
+                for p in ports:
+                    if '-' in str(p):
+                        ranges.append(p);continue
+                    try: portInt.append(int(p))
+                    except ValueError: pass
+                portInt = sorted(set(portInt))
+                portString = ",".join([str(p) for p in portInt])
+                if ranges: portString += "," + ",".join(ranges)
+            # Process args
+            argString = self._argParse(args) if args else ""
+            # Process kwargs
+            if kwargs:
+                for key, value in kwargs.items():
+                    argString += f" --{key} {value}"
+            results = {
+                "targets": targets,
+                "scans": []
+            }
+            # Run scan for each target
+            for target in targets:
+                if verbose: self.customLogPipe(f"Scanning {target}...")
+                xmlOutput = self._spawnProcess(
+                    target=target,
+                    portStr=portString,
+                    argStr=argString,
+                    su=su
+                )
+                if xmlOutput:
+                    parsed = self._parseXML(xmlOutput)
+                    results["scans"].append(parsed)
+                    # Store in history
+                    self.history[target] = parsed
+                    # Write to file if configured
+                    if self.config["writeFile"]: self._writeOutput(target, xmlOutput)
+            return results
+
+        def _writeOutput(self, target: str, xmlOutput: str):
+            """Write scan output to file"""
+            try:
+                filename = f"{self.config['path']}/{target}_scan.xml"
+                with open(filename, 'w') as f:
+                    f.write(xmlOutput)
+            except Exception as e:
+                self.customLogPipe(f"Write error: {str(e)}",level=2)
+    
     class proxify:
 
         def __init__(self,NSI:callable):
@@ -1118,6 +1267,15 @@ class nephila:
         proxySubParser.add_argument("--refresh-interval", type=int, help="Cache refresh interval in seconds (default: 3600).")
         proxySubParser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output.")
 
+        # Nmap Parser
+        nmapScanSubParser = self.subParsMode.add_parser("nmap", help="Run nmap scans and parse the output.")
+        nmapScanSubParser.add_argument("targets", help="Target hosts to scan, comma-separated.")
+        nmapScanSubParser.add_argument("-p", "--ports", help="Ports to scan (e.g., '80,443', '1-1000').")
+        nmapScanSubParser.add_argument("-a", "--args", help="Nmap arguments, colon-separated (e.g., 'sV:O:T4').")
+        nmapScanSubParser.add_argument("--su", action="store_true", help="Run nmap with sudo (for OS detection, etc.).")
+        nmapScanSubParser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output during scan.")
+        nmapScanSubParser.add_argument("-o", "--output", action="store_true", help="Write XML output to a file in the 'nmapScanOutput' directory.")
+
         self.args = self.parsCentral.parse_args()
         self.config['verbosity'] = self.args.verbose if hasattr(self.args, 'verbose') else True
 
@@ -1231,6 +1389,20 @@ class nephila:
                 stats = mitmCap.getCaptureStats()
                 self.customLogPipe(f"Capture stats: {json.dumps(stats, indent=2)}", level='output')
 
+        elif args.mode == 'nmap':
+            if not hasattr(self, 'nmapScanner'): self.nmapScanner = self.nmap(self)
+            if args.output:
+                self.nmapScanner.config['writeFile'] = True
+                if not os.path.exists(self.nmapScanner.config['path']):
+                    os.makedirs(self.nmapScanner.config['path'])
+            results = self.nmapScanner.scan(
+                targets=args.targets,
+                ports=args.ports,
+                args=args.args,
+                su=args.su,
+                verbose=args.verbose
+            )
+            self.customLogPipe(f"Nmap scan results:\n{json.dumps(results, indent=2)}", level='output')
         elif args.mode == 'enum':
             enum = self.enumeration(self)
             try:
