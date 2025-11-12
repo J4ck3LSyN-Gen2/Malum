@@ -87,6 +87,7 @@
 *   **Port Scanner (`baseScanner`)**: Perform various stealth scans, including SYN, FIN, XMAS, and NULL scans, as well as standard TCP connect scans with decoy support.
 *   **DNS Enumeration (`enumeration`)**: Conduct DNS reconnaissance, including A, MX, NS, and TXT lookups, reverse DNS queries, zone transfers, and subdomain enumeration.
 *   **MITM Traffic Capture (`mitmCapture`)**: Capture network traffic on a specified interface, apply BPF filters, and dynamically redirect packets based on user-defined rules.
+*   **Nmap Scanner (`nmap`)**: Run nmap scans on target hosts, providing a comprehensive report of open ports, services, and more.
 
 ---
 
@@ -387,4 +388,5 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 *   **License**: MIT
 
 ---
+
 [Back to the Top](#about)
