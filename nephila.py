@@ -74,6 +74,7 @@ class nephila:
                 "proxychainsVerifyLimit":20
 
             }
+            self._proxyAddressIndex = {}
             self._proxyChainCache = {}
             self._proxychainRefreshInterval = datetime.timedelta(hours=1)
             self._roundRobinIndex = {}
@@ -100,7 +101,7 @@ class nephila:
                     try: self._appendProxy(pType, result['proxy'], result)
                     except: pass  
             # Update cache
-            self._proxyChainCache['lastRefreshed'] = datetime.now()
+            self._proxyChainCache['lastRefreshed'] = datetime.datetime.now()
             self._proxyChainCache['verifiedProxies'] = verified[:limit]
             self.customLogPipe(f"Fetched and verified {len(verified[:limit])}/{len(rawProxies)} proxies",level=0)
             return verified[:limit]
@@ -151,7 +152,7 @@ class nephila:
             for pType in proxyTypes:
                 for metadata in self.proxies[pType].values():
                     proxy = metadata.get('proxy')
-                    if proxy: proxyList.append(proxy)
+                    if proxy: proxyList.append(f"{pType}://{proxy}")
             return proxyList
         
         
@@ -207,7 +208,7 @@ class nephila:
                 if isinstance(result, dict) and result and result.get('verified', [False])[0]: healthy.append(result)
             # Update cache if requested
             if updateCache:
-                self._proxyChainCache['verifiedProxies'] = healthy;self._proxyChainCache['lastRefreshed'] = datetime.now()
+                self._proxyChainCache['verifiedProxies'] = healthy;self._proxyChainCache['lastRefreshed'] = datetime.datetime.now()
             self.customLogPipe(f"Health check: {len(healthy)}/{len(proxiesToCheck)} proxies healthy",level=0)
             return healthy
         
@@ -259,6 +260,7 @@ class nephila:
                 raise ValueError(eM)
             hashID = self._getHashID(str(proxy))
             self.proxies[proxyType][hashID[0]] = proxyMetaData
+            self._proxyAddressIndex[proxy] = (proxyType, hashID[0])
             self.customLogPipe(f"Added {proxyType} proxy: {proxy}", level=0)
 
         def _calculateProxyScore(self, metadata:Dict[str,Any]) -> float:
@@ -278,7 +280,7 @@ class nephila:
                 elif latency <= 10.0: score += 0.3 * (1 - (latency - 1) / 9)
             timestamp = metadata.get('timestamp')
             if timestamp:
-                ageSec = (datetime.now() - timestamp).total_seconds();ageHour = ageSec / 3600
+                ageSec = (datetime.datetime.now() - timestamp).total_seconds();ageHour = ageSec / 3600
                 if ageHour <= 1: score += 0.2
                 elif ageHour <= 24: score += 0.2 * (1 - (ageHour - 1) / 23)
             proxy = metadata.get('proxy')
@@ -295,10 +297,10 @@ class nephila:
                     'totalAttempts': 0,
                     'successfullAttempts': 0,
                     'last_used': None,
-                    'first_used': datetime.now()}
+                    'first_used': datetime.datetime.now()}
             self.history[proxy]['totalAttempts'] += 1
             if success: self.history[proxy]['successfullAttempts'] += 1
-            self.history[proxy]['last_used'] = datetime.now()
+            self.history[proxy]['last_used'] = datetime.datetime.now()
 
         def _removeProxyByAddress(self, proxy:str) -> None:
             """Remove a proxy from storage by its address"""
@@ -310,64 +312,150 @@ class nephila:
 
         async def verifyProxy(self, proxy:str, proxyType:str='http') -> Optional[dict]:
             """Verify if a proxy is working by testing against validation URLs"""
+
+            # Validate proxy format
+            if not proxy or ':' not in proxy:
+                self.customLogPipe(f"Invalid proxy format: {proxy}", level=2)
+                return None
+
             proxyURL = f"{proxyType}://{proxy}"
+            self.customLogPipe(f"Testing proxy: {proxyURL}", level=0)
+
             for url in self.config['validationURLS']:
                 try:
+                    # httpx uses 'mounts' parameter for proxies
                     async with httpx.AsyncClient(
-                        proxies=proxyURL,
+                        mounts={
+                            "http://": httpx.AsyncHTTPTransport(proxy=proxyURL),
+                            "https://": httpx.AsyncHTTPTransport(proxy=proxyURL),
+                        },
                         timeout=self.config['testTimeout'],
                         verify=False
                     ) as client:
-                        start_time = datetime.now()
+                        start_time = datetime.datetime.now()
                         resp = await client.get(url)
-                        latency = (datetime.now() - start_time).total_seconds()
-                        if resp.status_code == 200: return {
+                        latency = (datetime.datetime.now() - start_time).total_seconds()
+
+                        self.customLogPipe(f"Proxy {proxy} -> {url}: {resp.status_code} ({latency:.2f}s)", level=0)
+
+                        if resp.status_code == 200:
+                            return {
                                 "proxy": proxy,
                                 "verified": [True, url, resp.text.strip()],
                                 "latency": latency,
-                                "timestamp": datetime.now()}
-                        else: return {
-                                "proxy": proxy,
-                                "verified": [False, url],
-                                "latency": latency,
-                                "status": resp.status_code,
-                                "timestamp": datetime.now() }
-                except Exception as e: continue
+                                "timestamp": datetime.datetime.now()
+                            }
+                except Exception as e:
+                    self.customLogPipe(f"Proxy {proxy} failed on {url}: {type(e).__name__}: {str(e)[:100]}", level=1)
+                    continue
+                
+            self.customLogPipe(f"Proxy {proxy} failed all verification tests", level=1)
             return None
 
         async def _getPubProxies(self, proxyType:str=None, limit:int=50) -> List[str]:
             """Fetch public proxies from API"""
-            pType = proxyType if proxyType else self.config['pubProxyType'];uri = self.config['pubProxyAPI'] + pType;proxies = set()
+            pType = proxyType if proxyType else self.config['pubProxyType']
+            uri = self.config['pubProxyAPI'] + pType
+            proxies = set()
+            self.customLogPipe(f"Fetching proxies from: {uri}", level=0)
             try:
                 async with httpx.AsyncClient(timeout=10, verify=False) as client:
                     resp = await client.get(uri)
+                    self.customLogPipe(f"API Response Status: {resp.status_code}", level=0)
                     if resp.status_code == 200:
-                        data = resp.json()
-                        proxyList = data.get('data', [])[:limit]
-                        proxies.update([proxy.strip() for proxy in proxyList if proxy.strip()])
-            except Exception as e: self.customLogPipe(f"Error fetching public proxies: {e}", level=2)
+                        # Try JSON first, fall back to plaintext
+                        try:
+                            data = resp.json()
+                            proxyList = data.get('data', [])
+                            self.customLogPipe(f"Parsed as JSON, got {len(proxyList)} proxies", level=0)
+                        except Exception as e:
+                            # If JSON fails, parse as plaintext (one proxy per line)
+                            self.customLogPipe(f"JSON parsing failed ({type(e).__name__}), trying plaintext format", level=1)
+                            text_content = resp.text.strip()
+                            self.customLogPipe(f"Raw response preview: {text_content[:200]}", level=0)
+                            proxyList = [line.strip() for line in text_content.split('\n') if line.strip()]
+                            self.customLogPipe(f"Parsed as plaintext, got {len(proxyList)} proxies", level=0)
+                        for proxy in proxyList[:limit]:
+                            if isinstance(proxy, dict):
+                                # Handle dict format: {"ip": "x.x.x.x", "port": "xxxx"}
+                                proxy_str = f"{proxy.get('ip', '')}:{proxy.get('port', '')}"
+                            else:
+                                # Handle string format: "x.x.x.x:port"
+                                proxy_str = str(proxy).strip()
+                            # Validate format (must have IP:port)
+                            if proxy_str and ':' in proxy_str and proxy_str.count(':') == 1:
+                                ip, port = proxy_str.rsplit(':', 1)
+                                try:
+                                    int(port)  # Validate port is numeric
+                                    proxies.add(proxy_str)
+                                    self.customLogPipe(f"Added proxy: {proxy_str}", level=0)
+                                except ValueError:
+                                    self.customLogPipe(f"Invalid port in proxy: {proxy_str}", level=1)
+                                    continue
+                            else:
+                                self.customLogPipe(f"Invalid proxy format: {proxy_str}", level=1)
+
+                        self.customLogPipe(f"Validated {len(proxies)} proxies from API", level=0)
+                    else:
+                        self.customLogPipe(f"API returned status {resp.status_code}: {resp.text[:200]}", level=2)
+
+            except Exception as e:
+                self.customLogPipe(f"Error fetching public proxies: {str(e)}", level=2)
+                import traceback
+                self.customLogPipe(traceback.format_exc(), level=2)
+
+            self.customLogPipe(f"Returning {len(proxies)} proxies", level=0)
             return list(proxies)
 
         async def fetch(self, proxyType:str=None, limit:int=50, verify:bool=True) -> Dict[str, List]:
             """Fetch and optionally verify proxies from public sources"""
             proxies = {'raw':[],'verified':[],'failed':[]}
             try:
-                rawProxies = await self._getPubProxies(proxyType, limit);proxies['raw'] = rawProxies
-                self.customLogPipe(f"Fetched {len(rawProxies)} proxies", level=0)
+                rawProxies = await self._getPubProxies(proxyType, limit)
+                proxies['raw'] = rawProxies
+                self.customLogPipe(f"Fetched {len(rawProxies)} raw proxies", level=0)
+
+                if not rawProxies:
+                    self.customLogPipe("No proxies returned from API", level=2)
+                    return proxies
+
                 if verify and rawProxies:
+                    self.customLogPipe(f"Starting verification of {len(rawProxies)} proxies...", level=0)
+                    pType = proxyType or self.config['pubProxyType']
                     verificationTasks = [
-                        self.verifyProxy(proxy, proxyType or self.config['pubProxyType']) 
-                        for proxy in rawProxies]
+                        self.verifyProxy(proxy, pType) 
+                        for proxy in rawProxies
+                    ]
                     results = await asyncio.gather(*verificationTasks, return_exceptions=True)
-                    for result in results:
+                    verificationCount = 0
+                    failedCount = 0
+                    for idx, result in enumerate(results):
+                        self.customLogPipe(f"Verification [{idx+1}/{len(results)}]: {result}", level=0)  # Debug
+                        if isinstance(result, Exception):
+                            self.customLogPipe(f"Verification error: {result}", level=1)
+                            failedCount += 1
+                            continue
                         if isinstance(result, dict) and result:
                             if result.get('verified', [False])[0]:
                                 proxies['verified'].append(result)
                                 pType = proxyType or self.config['pubProxyType']
-                                self._appendProxy(pType, result['proxy'], result)
-                            else: proxies['failed'].append(result)
-                    self.customLogPipe(f"Verified {len(proxies['verified'])}/{len(rawProxies)} proxies",level=0)
-            except Exception as e: self.customLogPipe(f"Error in fetch: {e}", level=2)
+                                try:
+                                    self._appendProxy(pType, result['proxy'], result)
+                                    verificationCount += 1
+                                except Exception as e:
+                                    self.customLogPipe(f"Failed to append proxy {result['proxy']}: {e}", level=1)
+                            else:
+                                proxies['failed'].append(result)
+                                failedCount += 1
+                        else: failedCount += 1
+
+                    self.customLogPipe(f"Verification complete: {verificationCount} verified, {failedCount} failed", level=0)
+                else: self.customLogPipe("Skipping verification", level=0)
+            except Exception as e:
+                self.customLogPipe(f"Error in fetch: {str(e)}", level=2)
+                import traceback
+                self.customLogPipe(traceback.format_exc(), level=2)
+
             return proxies
 
         def getProxy(self, proxyType:str='http', minScore:float=None, strategy:str='best') -> Optional[Dict[str, Any]]:
@@ -496,7 +584,7 @@ class nephila:
                             exported.append(f"{pType}://{proxy}")
             return exported
 
-        def importProxies(self, proxyList:List[str], verify:bool=False) -> Dict[str, int]:
+        async def importProxies(self, proxyList:List[str], verify:bool=False) -> Dict[str, int]:
             """
             Import proxies from a list
 
@@ -508,28 +596,35 @@ class nephila:
                 Dictionary with import statistics
             """
             stats = {'imported': 0, 'verified': 0, 'failed': 0}
-            for proxyStr in proxyList:
+            async def process_proxy(proxyStr):
                 try:
                     # Parse proxy string
                     if '://' in proxyStr: pType, address = proxyStr.split('://', 1)
                     else:
                         pType = 'http' ;address = proxyStr
                     if pType not in self.proxies:
-                        stats['failed'] += 1;continue
+                        return 'failed'
                     if verify:
-                        result = asyncio.run(self.verifyProxy(address, pType))
+                        result = await self.verifyProxy(address, pType)
                         if result and result.get('verified', [False])[0]:
-                            self._appendProxy(pType, address, result);stats['verified'] += 1
-                        else: stats['failed'] += 1
+                            self._appendProxy(pType, address, result); return 'verified'
+                        else: return 'failed'
                     else:
                         metadata = {
                             'proxy': address,
                             'verified': [False, None],
-                            'timestamp': datetime.now()}
+                            'timestamp': datetime.datetime.now()}
                         self._appendProxy(pType, address, metadata)
-                        stats['imported'] += 1
+                        return 'imported'
                 except Exception as e:
-                    self.customLogPipe(f"Error importing proxy {proxyStr}: {e}", level=2);stats['failed'] += 1
+                    self.customLogPipe(f"Error importing proxy {proxyStr}: {e}", level=2); return 'failed'
+
+            tasks = [process_proxy(proxyStr) for proxyStr in proxyList]
+            results = await asyncio.gather(*tasks)
+
+            for result in results:
+                if result:
+                    stats[result] += 1
             return stats
     
     class firewallFrag:
@@ -1169,12 +1264,14 @@ class nephila:
             try:
                 if args.action == 'fetch':
                     self.customLogPipe(f"Fetching and verifying {args.limit} {args.proxy_type} proxies...", level=0)
-                    results = asyncio.run(self.proxyManager.fetchAndVerify(limit=args.limit, proxyType=args.proxy_type))
-                    self.customLogPipe(f"Successfully fetched {len(results)} verified proxies",level='output')
+                    resDict = asyncio.run(self.proxyManager.fetch(proxyType=args.proxy_type,limit=args.limit))
+                    verifiedProxies = resDict.get('verified',[])
+                    self.customLogPipe(f"Successfully fetched {len(verifiedProxies)} verified proxies", level='output')
                     if args.verbose:
-                        for proxy_data in results[:10]:  # Show first 10
-                            self.customLogPipe(f"  {proxy_data['proxy']} - Latency: {proxy_data['latency']:.2f}s",level='output')
-
+                        pC = 0
+                        for proxy in verifiedProxies:
+                            self.customLogPipe(f"({pC+1}/{len(verifiedProxies)})\t{proxy}", level='output')
+                            pC += 1
                 elif args.action == 'list':
                     proxies = self.proxyManager.getProxies(proxyType=args.proxy_type)
                     self.customLogPipe(f"Available {args.proxy_type} proxies: {len(proxies)}", level='output')
@@ -1206,7 +1303,7 @@ class nephila:
                     try:
                         with open(args.file, 'r') as f:
                             proxy_list = [line.strip() for line in f if line.strip()]
-                        stats = self.proxyManager.importProxies(proxy_list,verify=args.verify)
+                        stats = asyncio.run(self.proxyManager.importProxies(proxy_list,verify=args.verify))
                         self.customLogPipe(f"Import complete: {json.dumps(stats)}",level='output')
                     except Exception as E: self.customLogPipe(f"Import failed: {str(E)}", level=3)
                 elif args.action == 'clear':
