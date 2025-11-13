@@ -3,4 +3,5 @@ colorama
 alive_progress
 dnspython
 beautifulSoup4
+httpx
 urljoin
