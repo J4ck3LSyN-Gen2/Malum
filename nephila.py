@@ -23,22 +23,38 @@ class nephila:
     def customLogPipe(self,message:str,level:int=1,exc_info:bool=False,noLog:bool=False,silent:bool=False):
         if silent or not self.config['verbosity']: return 
         prefixMap = {1: "[*] ",3: "[!] ",'output': "[^] "};logMap = {0: self.customLogger.debug,'d': self.customLogger.debug,'debug': self.customLogger.debug,1: self.customLogger.info,'i': self.customLogger.info,'info': self.customLogger.info,2: self.customLogger.warning,'w': self.customLogger.warning,'warning': self.customLogger.warning,3: self.customLogger.error,'r': self.customLogger.error,'error': self.customLogger.error,4: self.customLogger.critical,'c': self.customLogger.critical,'critical': self.customLogger.critical};prefix = prefixMap.get(level, "");logFunc = logMap.get(level, self.customLogger.info)
-        if not noLog: logFunc(f"{prefix}{message}", exc_info=exc_info)    
-    def __init__(self,app:bool=False):
+        if not noLog: logFunc(f"{prefix}{message}", exc_info=exc_info)
+
+    def __init__(self,app:bool=False,logPipe:callable=None):
         self.config = {
             "noConfirmUser":False,
             "verbosity":True
         }
-        self.customLogger = customLogger; self.args = None
+        self.customLogger = customLogger 
+        self.args = None
         self.parsCentral = None
         self.subParsMode = None
         self.app = app
+        if logPipe:
+            self.alienLogPipe = logPipe
+            self.customLogPipe = self._logPipeBridge
         if self.app: 
             self._initParsers()
             self.noAdmin = self.args.no_admin
             if not self.noAdmin: self._initImports()
             else: self.customLogPipe("Running in --no-admin mode. Scapy-dependent features are disabled.",level=2)
             self.customLogPipe(f"Finished initializing nephila({str(__version__)}).")
+
+    def _logPipeBridge(self,message:str,level:int=1,**kwargs):
+        """
+        A middle-man function to bridge nephila's internal logging calls
+        to the alien.loggerHandle.logPipe when provided.
+        """
+        # Map nephila's level to alien's loggingLevel
+        levelMap = {0: 'debug', 1: 'info', 2: 'warning', 3: 'error', 4: 'critical'}
+        alienLvl = levelMap.get(level, 'info')
+        # Call the provided alien logger
+        self.alienLogPipe('nephila', message, loggingLevel=alienLvl)
 
     class nmap:
         def __init__(self, NSI: callable):
