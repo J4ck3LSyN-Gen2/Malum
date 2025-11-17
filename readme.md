@@ -17,7 +17,10 @@
 ---
 
 ## Global Index
-
+- [Andras](#andras)
+    - [About Andras](#about-andras)
+    - [Notices](#andras-notices)
+    - [Usage](#andras-usage)
 - [Nephila](#nephila)
     - [About Nephila](#about-nehphila)
     - [Notices](#nephila-notices)
@@ -28,8 +31,8 @@
 
 1.  **Clone the repository:**
     ```sh
-    git clone https://github.com/
-    cd nephila
+    git clone https://github.com/J4ck3LSyN-Gen2/Malum.git
+    cd malum
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -42,11 +45,20 @@
 3.  **Install dependencies:**
     A `requirements.txt` file should be created containing the following:
     ```
-    colorama
-    httpx
     scapy
+    fake_useragent
+    colorama
+    alive_progress
     dnspython
-    alive-progress
+    beautifulSoup4
+    urljoin
+    selenium
+    beautifulsoup4
+    requests
+    PyYAML
+    pycryptodome
+    pywin32
+    sys_platform == 'win32'
     ```
     Install them using pip:
     ```sh
@@ -60,6 +72,171 @@
     ```
 ---
 
+## Andras
+
+### About Andras
+
+<p align="center">
+"𝔗𝔥𝔢 𝔰𝔬𝔴𝔢𝔯 𝔬𝔣 𝔡𝔦𝔰𝔠𝔬𝔯𝔡, 𝔞 𝔭𝔥𝔞𝔫𝔱𝔬𝔪 𝔦𝔫 𝔱𝔥𝔢 𝔪𝔞-𝔠𝔥𝔦𝔫𝔢; 𝔞 𝔪𝔞𝔰𝔱𝔢𝔯 𝔬𝔣 𝔪𝔦𝔪𝔦𝔠𝔯𝔶 𝔞𝔫𝔡 𝔪𝔦𝔰𝔡𝔦𝔯𝔢𝔠𝔱𝔦𝔬𝔫 𝔱𝔥𝔞𝔱 𝔴𝔦𝔢𝔩𝔡𝔰 𝔢𝔵𝔭𝔩𝔬𝔦𝔱𝔰 𝔩𝔦𝔨𝔢 𝔞 𝔰𝔥𝔞𝔯𝔭𝔢𝔫𝔢𝔡 𝔟l𝔞𝔡𝔢, 𝔪𝔬𝔳𝔦𝔫𝔤 𝔲𝔫𝔰𝔢𝔢𝔫 𝔱𝔬 𝔡𝔦𝔰𝔪𝔞𝔫𝔱𝔩𝔢 𝔡𝔢𝔣𝔢𝔫𝔰𝔢𝔰 𝔞𝔫𝔡 𝔰𝔬𝔴 𝔠𝔥𝔞𝔬𝔰 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴𝔰."
+</p>
+
+<p align="center">
+  <img src="imgs/andrasUsage0.png">
+</p>
+
+**Andras** is a sophisticated browser automation framework designed for emulation, evasion, and interaction. It leverages Selenium to provide a powerful, scriptable interface for controlling web browsers, complete with features for mimicking human behavior and performing complex actions on modern web applications.
+
+---
+
+### Andras Core Features
+
+*   **Advanced Browser Control**: Programmatically start, stop, and configure browsers (Chrome, Firefox) with support for headless mode, proxies, and custom window sizes.
+*   **Human Emulation (`ActHuman`)**: Evade bot detection with built-in methods for human-like typing (with typos), mouse movements, clicking, and scrolling.
+*   **Stealth & Evasion**: Features include stealth mode for Chrome to hide automation flags, extensive user-agent management with randomization and remote fetching, and proxy support.
+*   **X/Twitter Interaction (`XInteract`)**: A dedicated module to automate X, including secure login (with 2FA support), posting tweets (with media), searching for posts, and exporting rich data to JSON or CSV.
+*   **DuckDuckGo Interaction (`DuckInteract`)**: Automate searches on DuckDuckGo and interact with its AI Chat, enabling multi-turn conversations and dork construction.
+*   **Interactive Console**: Launch a powerful REPL-style console to control an active browser session in real-time, allowing for dynamic element finding, JavaScript execution, and interaction.
+*   **Mouse Event Recording & Playback**: Capture and replay mouse movements, clicks, and other events to replicate user interactions.
+*   **Built-in Caching**: A simple yet effective file-based caching system to store and retrieve data like user-agent lists, reducing redundant network requests.
+
+---
+
+### Andras Index
+
+- [About Andras](#about-andras)
+  - [Core Features](#andras-core-features)
+- [Notces](#andras-notices)
+- [Usage](#andras-usage)
+  - [Command-Line Interface (CLI)](#andras-command-line-interface-cli)
+    - [X/Twitter Interaction](#andras-xtwitter-interaction)
+    - [DuckDuckGo Interaction](#andras-duckduckgo-interaction)
+    - [DuckDuckGo Pythonic](#andras-duckduckgo-interaction-pythonic)
+    - [Interactive Console](#andras-interactive-console)
+
+---
+
+### Andras Notices
+
+*   **Ethical Use**: Andras is a powerful automation tool. It should only be used for legitimate, authorized, and ethical purposes. Automating interactions with websites may violate their Terms of Service. The user is solely responsible for their actions.
+*   **Account Safety**: When automating actions on platforms like X/Twitter, be aware that excessive or bot-like behavior can lead to account restrictions or suspension. Use the `ActHuman` features and reasonable delays.
+*   **Browser Installation**: Andras requires the target browser (e.g., Chrome, Firefox) and its corresponding WebDriver to be installed on the system.
+
+---
+
+### Andras Usage
+
+Andras can be run as a standalone CLI tool or imported as a library into your own Python projects.
+
+#### Andras Command-Line Interface (CLI)
+
+The CLI provides a quick way to perform common tasks.
+
+```sh
+python3 andras.py [options]
+```
+
+##### Andras X/Twitter Interaction
+
+```sh
+# Log in to X/Twitter (will prompt for password if not provided)
+python3 andras.py --x-login <username>
+
+# Search for posts containing "cybersecurity" and export to a JSON file
+python3 andras.py --x-search "cybersecurity" "threat intelligence" --x-export results.json
+
+# Post a tweet with a media file
+python3 andras.py --x-post "Automated post from Andras" --x-post-media /path/to/image.png
+```
+
+##### Andras DuckDuckGo Interaction
+
+```sh
+# Search DuckDuckGo for a query
+python3 andras.py --ddg-search "what is the solomonic demon andras"
+
+# Interact with DuckDuckGo's AI Chat
+python3 andras.py --ddg-chat "Write a python script to list files in a directory"
+```
+
+##### Andras Interactive Console
+
+Launch a browser and attach an interactive console to control it live.
+
+```sh
+python3 andras.py -u https://google.com -c
+```
+
+#### Andras as a Python Library
+
+Import `Andras` to integrate its powerful automation capabilities into your own scripts.
+
+##### Andras Basic Browser Control (Pythonic)
+
+```python
+from andras import Andras
+import time
+
+# Initialize Andras (this does not start the browser)
+ai = Andras()
+# Start the browser instance
+ai.browserInstance.start(browser='chrome', headless=False)
+# Navigate to a URL
+ai.browserInstance.navigateTo('https://book.hacktricks.xyz/')
+time.sleep(5) # Wait for 5 seconds
+# Take a screenshot
+ai.browserInstance.screenshot('hacktricks.png')
+# Stop the browser
+ai.browserInstance.stop()
+```
+
+##### Andras X/Twitter Interaction (Pythonic)
+
+```python
+from andras import Andras
+from getpass import getpass
+
+ai = Andras()
+
+# Start a non-headless browser for login
+ai.browserInstance.start(headless=False)
+
+# Login to X
+username = "your_x_username"
+password = getpass("Enter your X password: ")
+ai.xInteractInstance.login(username, password)
+
+# Search for posts
+results = ai.xInteractInstance.searchPosts(keywords=["OSINT", "redteam"], maxResults=20)
+
+# Export results
+ai.xInteractInstance.exportResults("osint_search.json")
+
+ai.browserInstance.stop()
+```
+
+##### Andras DuckDuckGo Interaction (Pythonic)
+
+```python
+from andras import Andras
+
+ai = Andras()
+ai.browserInstance.start(headless=True) # Can be headless
+
+# Perform a search
+search_results = ai.duckInteractInstance.search("powershell amsi bypass", pages=2)
+print(f"Found {len(search_results)} search results.")
+
+# Have a conversation with DuckDuckGo AI
+prompt = "Explain the difference between a SYN scan and a TCP Connect scan."
+response = ai.duckInteractInstance.duckChat(prompt)
+
+if response['success']:
+    print("--- AI Response ---")
+    print(response['response'])
+
+ai.browserInstance.stop()
+```
+
 ## Nephila
 
 ### About Nehphila
@@ -68,7 +245,7 @@
   "𝔗𝔥𝔢 𝔴𝔢𝔞𝔳𝔢𝔯 𝔬𝔣 𝔴𝔢𝔟𝔰, 𝔪𝔞𝔰𝔱𝔢𝔯 𝔬𝔣 𝔫𝔢𝔱𝔴𝔬𝔯k𝔰 𝔞𝔫𝔡 𝔲𝔫𝔰𝔢𝔢𝔫 𝔠𝔬𝔫𝔫𝔢𝔠𝔱𝔦𝔬𝔫𝔰; 𝔞 𝔰𝔢𝔫𝔱𝔦𝔫𝔢𝔩 𝔬𝔣 𝔞𝔫𝔞𝔩𝔶𝔰𝔦𝔰 𝔞𝔫𝔡 𝔭𝔯𝔬x79 𝔪𝔞𝔫𝔦𝔭𝔲𝔩𝔞𝔱𝔦𝔬𝔫 𝔱𝔥𝔞𝔱 𝔰𝔭𝔦𝔫𝔰 𝔦𝔫𝔱𝔢𝔩𝔩𝔦𝔤𝔢𝔫𝔠𝔢 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔱𝔥𝔯𝔢𝔞𝔡𝔰 𝔬𝔣 𝔱𝔯𝔞𝔣𝔣𝔦𝔠 𝔞𝔫𝔡 𝔡𝔞𝔱𝔞 𝔣𝔩𝔬𝔴, 𝔯𝔢𝔳𝔢𝔞𝔩𝔦𝔫𝔤 𝔴𝔥𝔞𝔱 𝔩𝔲𝔯𝔨𝔰 𝔴𝔦𝔱𝔥𝔦n 𝔱𝔥𝔢 𝔫𝔢𝔱’𝔰 𝔡𝔢𝔰𝔦𝔤𝔫."
 </p>
 
-
+---
 
 <p align="center">
   <img src="imgs/nephilaUsage.png">
@@ -388,5 +565,4 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 *   **License**: MIT
 
 ---
-
 [Back to the Top](#about)
