@@ -565,4 +565,5 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 *   **License**: MIT
 
 ---
+
 [Back to the Top](#about)
