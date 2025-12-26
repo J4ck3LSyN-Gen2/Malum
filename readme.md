@@ -5,8 +5,6 @@
 ![Offensive Security](https://img.shields.io/badge/Offensive%20Security-magenta)
 ![Alien Generation 2 Verion 0.2.1](https://img.shields.io/badge/Alien%20Generation%202-0.2.1-brightgreen)
 
-> _NOTE: Documentation for `amos` is coming soon, as well as 2 other tools for more red-team/purple-team operations._
-
 ## About
 
 <p align="center">
@@ -558,6 +556,47 @@ results = nmapScanner.scan(
 )
 print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 ```
+
+## Amon 
+
+"𝔗𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴 𝔤𝔲𝔞𝔯𝔡𝔦𝔞𝔫 𝔬𝔣 𝔱𝔥𝔢 𝔫𝔢𝔱, 𝔞 𝔰𝔦𝔩𝔢𝔫𝔱 𝔬𝔟𝔰𝔢𝔯𝔳𝔢𝔯 𝔱𝔥𝔞𝔱 𝔣𝔦𝔩𝔱𝔢𝔯𝔰 𝔱𝔥𝔢 𝔣𝔩𝔬𝔴 𝔬𝔣 𝔡𝔞𝔱𝔞; 𝔞 𝔡𝔢𝔣𝔢𝔫𝔡𝔢𝔯 𝔞𝔤𝔞𝔦𝔫𝔰𝔱 𝔪𝔞𝔩𝔦𝔠𝔦𝔬𝔲𝔰 𝔡𝔬𝔪𝔞𝔦𝔫𝔰 𝔞𝔫𝔡 𝔞 𝔴𝔞𝔱𝔠𝔥𝔢𝔯 𝔣𝔬𝔯 𝔰𝔲𝔰𝔭𝔦𝔠𝔦𝔬𝔲𝔰 𝔱𝔯𝔞𝔣𝔣𝔦𝔠, 𝔰𝔦𝔫𝔨𝔦𝔫𝔤 𝔱𝔥𝔢 𝔲𝔫𝔴𝔞𝔫𝔱𝔢𝔡 𝔞𝔫𝔡 𝔭𝔯𝔬𝔱𝔢𝔠𝔱𝔦𝔫𝔤 𝔱𝔥𝔢 𝔦𝔫𝔫𝔬𝔠𝔢𝔫𝔱 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴𝔰."
+
+### Amon Usage
+
+Amon is primarily run as a standalone DNS server via CLI, but can also be imported as a library.
+
+### Amon Core Features
+
+* _AD/Tracker/Malware Blocking_: Uses "gravity" blocklists (fetched from sources like StevenBlack and Hagezi) to sinkhole malicious or unwanted domains to 0.0.0.0.
+* _DNS over HTTPS Forwarding_: Securely resolves clean queries via DoH with rotating providers and optional JA3 fingerprint spoofing (via curl_cffi).
+* _DNS Tunneling Detection_: Calculates Shannon entropy on domain labels and flags high-entropy or overly long queries as suspicious.
+* _Caching_: Simple in-memory cache for repeated queries to reduce upstream requests.
+* _Logging_: Colored console logging with optional file logging for monitoring blocked and resolved domains.
+* _Threaded Performance_: Handles multiple concurrent DNS requests efficiently.
+
+### Amon Notices
+
+* __Root/Administrator Privileges__: Binding to port 53 requires root privileges. Without it, the script will exit with a permission error.
+* __Ethical Use__: Amon is intended for personal network protection, ad-blocking, and defensive security research. Use only on networks you own or have authorization to monitor.
+* __Optional Dependency__: JA3 spoofing for better evasion in DoH requests requires curl_cffi.requests. If not installed, it falls back to standard requests.
+
+### Amon Dependencies
+
+```markdown
+* dnslib
+* curl_cffi
+```
+
+### Amon CLI
+
+* `-h, ---help`: Displays the help message.
+* `-p, --port <port>`: Listen on a custom port (no root needed if >1024).
+* `--doh <url>`: Use a specific DoH upstream (default rotates between Cloudflare/Google/Quad9).
+* `--log-dir <path>`: Custom directory for log files.
+* `--log-file <file>`: Custom log file name/path.
+* `--no-file-log`: Disable file logging.
+* `--verbosity`: Control console output verbosity.
+
 ## Credits
 
 <img src="https://tryhackme-badges.s3.amazonaws.com/J4ck3LSyN.png" alt="Your Image Badge" />
@@ -567,6 +606,4 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 *   **License**: MIT
 
 ---
-
 [Back to the Top](#about)
-
