@@ -604,7 +604,7 @@ Amon is primarily run as a standalone DNS server via CLI, but can also be import
 
 ## Credits
 
-<img src="https://tryhackme-badges.s3.amazonaws.com/J4ck3LSyN.png" alt="Your Image Badge" />
+<img src="https://tryhackme.com/badges/J4ck3LSyN.png" alt="Your Image Badge" />
 
 *   **Author**: J4ck3LSyN
 *   **Version**: 0.1.0
