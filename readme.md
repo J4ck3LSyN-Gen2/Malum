@@ -5,6 +5,8 @@
 ![Offensive Security](https://img.shields.io/badge/Offensive%20Security-magenta)
 ![Alien Generation 2 Verion 0.2.1](https://img.shields.io/badge/Alien%20Generation%202-0.2.1-brightgreen)
 
+> _NOTE: Documentation for `amos` is coming soon, as well as 2 other tools for more red-team/purple-team operations._
+
 ## About
 
 <p align="center">
@@ -567,3 +569,4 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 ---
 
 [Back to the Top](#about)
+
