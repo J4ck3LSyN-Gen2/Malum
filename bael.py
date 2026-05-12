@@ -204,27 +204,54 @@ class Bael:
         except ImportError:print("PyInstaller missing.")
 
 def build_parser()->argparse.ArgumentParser:
-    p=argparse.ArgumentParser(description="Bael v0.1.5 mTLS Orchestrator", formatter_class=argparse.RawDescriptionHelpFormatter, epilog="Examples:\n  Server:  --mode server --listen 0.0.0.0:443 --cert srv.crt --key srv.key --ca ca.crt\n  Client:  --mode client --remote 1.2.3.4:443 --cert rmt.crt --key rmt.key --ca ca.crt\n  TUN:     --mode tun --config tun.json\n  Keygen:  --mode keygen")
-    p.add_argument("--mode",choices=["server","client","tun","keygen","build","encode-dns"],required=True, help="Operation mode: 'server'/'client' (L4), 'tun' (L3), 'keygen' (PKI setup), 'build' (binary), or 'encode-dns' (obfuscation).")
-    p.add_argument("--legacy",action="store_true",help="Force legacy Layer 4 relay logic instead of native Layer 3 TUN interface functionality.")
-    p.add_argument("--listen",default="0.0.0.0:53", metavar="ADDR:PORT", help="Local address and port to bind for listening (default: 0.0.0.0:53).")
-    p.add_argument("--remote", metavar="ADDR:PORT", help="Address and port of the remote peer to connect to.")
-    p.add_argument("--config", metavar="FILE", help="JSON configuration file for native TUN mode (defines IPs, masks, and retries).")
-    p.add_argument("--dns-lookup", metavar="DOMAIN", help="Domain to query for an obfuscated DNS TXT record containing peer configuration.")
-    p.add_argument("--cert", metavar="FILE", help="Path to the TLS public certificate (.crt).")
-    p.add_argument("--key", metavar="FILE", help="Path to the private TLS key (.key).")
-    p.add_argument("--ca", metavar="FILE", help="Path to the CA certificate for mutual TLS verification.")
-    p.add_argument("--tls-profile",choices=["default","chrome","firefox"],default="chrome", help="Browser fingerprint to emulate during handshake (default: chrome).")
-    p.add_argument("--sni",default="www.microsoft.com", metavar="HOST", help="Server Name Indication string for the client handshake (default: www.microsoft.com).")
-    p.add_argument("--morphing",action="store_true",default=True, help="Apply traffic morphing (random padding and data smuggling) to evade statistical analysis.")
-    p.add_argument("--morph-chance",type=float,default=0.65, metavar="0-1", help="Probability that a packet will include morphing/padding (default: 0.65).")
-    p.add_argument("--max-padding",type=int,default=255, metavar="BYTES", help="Maximum size of random padding added to packets (default: 255).")
-    p.add_argument("--data-transmit", metavar="STR|PATH", help="File path or string to smuggle opportunistically inside encrypted traffic padding.")
-    p.add_argument("--whitelist", metavar="CIDR", help="Comma-separated IP/CIDR ranges allowed to connect (Server mode only).")
-    p.add_argument("--map", metavar="FILE", help="JSON mapping of incoming SNI hostnames to target backend addresses (Server mode only).")
-    p.add_argument("--encode-str", metavar="DATA", help="Plaintext string to obfuscate for a DNS TXT configuration record.")
-    p.add_argument("--target-hostname", metavar="NAME", help="Hostname of the target machine used to derive the XOR key for DNS obfuscation.")
-    p.add_argument("--metrics-port",type=int,default=9100, metavar="PORT", help="Port for the Prometheus metrics exporter (default: 9100).")
+    p=argparse.ArgumentParser(
+        description="Bael v0.1.5 mTLS Orchestrator\n\nA high-performance, stealth-focused L3/L4 relay utilizing mutual TLS and native TUN interfaces.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Operational Examples:
+  [+] PKI Setup:
+      %(prog)s --mode keygen
+
+  [+] L3 TUN Client (Requires Root):
+      sudo %(prog)s --mode tun --config tun_settings.json --cert rmt.crt --key rmt.key --ca ca.crt
+
+  [+] L4 Relay Server (SNI Mapping):
+      %(prog)s --mode server --listen 0.0.0.0:443 --map routes.json --cert srv.crt --key srv.key --ca ca.crt
+
+  [+] Obfuscated DNS Beacon Generation:
+      %(prog)s --mode encode-dns --encode-str '{"remoteHost":"1.2.3.4"}' --target-hostname workstation-01
+
+Note: L3 'tun' mode requires the script to be run with root privileges to manage virtual interfaces. 
+The DNS obfuscation is machine-bound; the target hostname must match exactly for decryption to succeed.
+        """
+    )
+    core = p.add_argument_group("Core Mode Options")
+    core.add_argument("--mode",choices=["server","client","tun","keygen","build","encode-dns"],required=True, help="Operation mode: 'server'/'client' (L4), 'tun' (L3), 'keygen' (PKI setup), 'build' (binary), or 'encode-dns' (obfuscation).")
+    core.add_argument("--legacy",action="store_true",help="Force legacy Layer 4 relay logic instead of native Layer 3 TUN interface functionality.")
+
+    net = p.add_argument_group("Network Configuration")
+    net.add_argument("--listen",default="0.0.0.0:53", metavar="ADDR:PORT", help="Local address and port to bind for listening (default: 0.0.0.0:53).")
+    net.add_argument("--remote", metavar="ADDR:PORT", help="Address and port of the remote peer to connect to.")
+    net.add_argument("--config", metavar="FILE", help="JSON configuration file for native TUN mode (defines IPs, masks, and retries).")
+    net.add_argument("--dns-lookup", metavar="DOMAIN", help="Domain to query for an obfuscated DNS TXT record containing peer configuration.")
+    net.add_argument("--metrics-port",type=int,default=9100, metavar="PORT", help="Port for the Prometheus metrics exporter (default: 9100).")
+
+    stealth = p.add_argument_group("Stealth & Evasion Options")
+    stealth.add_argument("--tls-profile",choices=["default","chrome","firefox"],default="chrome", help="Browser fingerprint to emulate during handshake (default: chrome).")
+    stealth.add_argument("--sni",default="www.microsoft.com", metavar="HOST", help="Server Name Indication string for the client handshake (default: www.microsoft.com).")
+    stealth.add_argument("--morphing",action="store_true",default=True, help="Apply traffic morphing (random padding and data smuggling) to evade statistical analysis.")
+    stealth.add_argument("--morph-chance",type=float,default=0.65, metavar="0-1", help="Probability that a packet will include morphing/padding (default: 0.65).")
+    stealth.add_argument("--max-padding",type=int,default=255, metavar="BYTES", help="Maximum size of random padding added to packets (default: 255).")
+    stealth.add_argument("--data-transmit", metavar="STR|PATH", help="File path or string to smuggle opportunistically inside encrypted traffic padding.")
+    stealth.add_argument("--encode-str", metavar="DATA", help="Plaintext string to obfuscate for a DNS TXT configuration record.")
+    stealth.add_argument("--target-hostname", metavar="NAME", help="Hostname of the target machine used to derive the XOR key for DNS obfuscation.")
+
+    pki = p.add_argument_group("Authentication & PKI")
+    pki.add_argument("--cert", metavar="FILE", help="Path to the TLS public certificate (.crt).")
+    pki.add_argument("--key", metavar="FILE", help="Path to the private TLS key (.key).")
+    pki.add_argument("--ca", metavar="FILE", help="Path to the CA certificate for mutual TLS verification.")
+    pki.add_argument("--whitelist", metavar="CIDR", help="Comma-separated IP/CIDR ranges allowed to connect (Server mode only).")
+    pki.add_argument("--map", metavar="FILE", help="JSON mapping of incoming SNI hostnames to target backend addresses (Server mode only).")
     return p
 
 def genkeys(args):
