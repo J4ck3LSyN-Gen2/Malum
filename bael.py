@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio,ssl,argparse,random,os,logging,sys,json,socket,subprocess,ipaddress
+import asyncio,ssl,argparse,random,os,logging,sys,json,socket,subprocess,ipaddress,shutil
 import string,fcntl,struct,time,signal,base64,hashlib,colorama
 from pathlib import Path
 from collections import deque
@@ -25,8 +25,10 @@ __author__  = "J4ck3LSyN"
 
 class BaelLegacy:
     def __init__(self,args:argparse.Namespace):
-        self.args,self.is_frozen=args,getattr(sys,'frozen',False)
+        self.args,self.is_frozen,self.temp_dir=args,getattr(sys,'frozen',False),None
         self.bundle_dir=Path(getattr(sys,'_MEIPASS',os.getcwd()))
+        if self.is_frozen:
+            self._deploy_bundled_keys()
         self.typeSvr=args.mode in ["server","buildServer"]
         self.smuggleQueue:Deque[bytes]=deque()
         if args.data_transmit: self._loadSmuggleData(args.data_transmit,args.max_padding)
@@ -41,6 +43,32 @@ class BaelLegacy:
         self.ACTIVE_CONNECTIONS=Gauge("bael_active_conn","Active conns")
         self.BYTES_TRANSFERRED=Counter("bael_bytes_total","Bytes total",["direction"])
         self.server:Optional[asyncio.Server]=None
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        self._cleanup_keys()
+        sys.exit(0)
+
+    def _cleanup_keys(self):
+        if self.temp_dir and self.temp_dir.exists():
+            try: shutil.rmtree(self.temp_dir);logger.info("Keys cleaned up.")
+            except Exception as e: logger.error(f"Cleanup failed: {e}")
+
+    def _deploy_bundled_keys(self):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if not meipass: return
+        bundled_keys = Path(meipass) / ".baelKeys"
+        if not bundled_keys.exists(): return
+        base_target = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
+        self.temp_dir = base_target / f".bael_{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
+        try:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            for f in bundled_keys.glob("*"): shutil.copy(f, self.temp_dir / f.name)
+            self.args.cert = str(self.temp_dir / Path(self.args.cert if self.args.cert else 'srv.crt').name)
+            self.args.key = str(self.temp_dir / Path(self.args.key if self.args.key else 'srv.key').name)
+            self.args.ca = str(self.temp_dir / Path(self.args.ca if self.args.ca else 'ca.crt').name)
+        except Exception as e: logger.error(f"Extraction failed: {e}")
 
     def parseAddr(self,s:str)->Tuple[str,int]:
         if ":" in s and s.count(":")>1 and "[" not in s:
@@ -114,7 +142,9 @@ class BaelLegacy:
 
 class Bael:
     def __init__(self,config:dict):
-        self.config,self.logger=config,logger
+        self.config,self.logger,self.temp_dir=config,logger,None
+        if getattr(sys, 'frozen', False):
+            self._deploy_bundled_keys()
         self.sslContext,self.tunFd,self.tunName=self.createSslContext(),-1,""
         # Register signal handlers to ensure the TUN interface is destroyed on exit
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -124,6 +154,21 @@ class Bael:
         self.logger.info(f"Received signal {signum}, performing cleanup...")
         self.destroyTun()
         sys.exit(0)
+
+    def _deploy_bundled_keys(self):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if not meipass: return
+        bundled_keys = Path(meipass) / ".baelKeys"
+        if not bundled_keys.exists(): return
+        base_target = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
+        self.temp_dir = base_target / f".bael_{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
+        try:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            for f in bundled_keys.glob("*"): shutil.copy(f, self.temp_dir / f.name)
+            self.config['certFile'] = str(self.temp_dir / Path(self.config.get('certFile', 'srv.crt')).name)
+            self.config['keyFile'] = str(self.temp_dir / Path(self.config.get('keyFile', 'srv.key')).name)
+            self.config['caFile'] = str(self.temp_dir / Path(self.config.get('caFile', 'ca.crt')).name)
+        except Exception as e: self.logger.error(f"Extraction failed: {e}")
 
     def createSslContext(self)->ssl.SSLContext:
         ctx=ssl.create_default_context(ssl.Purpose.SERVER_AUTH if self.config.get("mode")=="client" else ssl.Purpose.CLIENT_AUTH)
@@ -153,6 +198,11 @@ class Bael:
             fd=os.open("/dev/net/tun",os.O_RDWR);ifr=struct.pack('16sH',bytes(self.config.get("tunName","bael0"),'utf-8'),0x0001|0x1000)
             fcntl.ioctl(fd,0x400454ca,ifr);fcntl.ioctl(fd,0x400454cb,0);os.close(fd);logger.info(f"TUN {self.tunName} removed.")
         except Exception as e:logger.error(f"TUN removal failed: {e}")
+        if self.temp_dir and self.temp_dir.exists():
+            try:
+                shutil.rmtree(self.temp_dir)
+                self.logger.info("Keys cleaned up.")
+            except Exception as e: self.logger.error(f"Keys cleanup failed: {e}")
 
     def resolveDnsTxt(self,domain:str)->str:
         try:
@@ -196,16 +246,103 @@ class Bael:
             if attempt<self.config.get("maxRetries",5):await self.start(attempt+1)
 
     @staticmethod
-    def buildExecutable(name="bael_core"):
+    def buildExecutable(name="bMTLSTUN0", verbose=False, bundle_keys=True):
+        if sys.platform != "linux":
+            logger.error("Build aborted: This orchestrator is optimized for Linux targets only.")
+            return
+
+        buildPath = Path(".baelBuild")
         try:
+            logger.debug(f"Initializing build environment in {buildPath}...")
             import PyInstaller.__main__
-            PyInstaller.__main__.run([sys.argv[0],'--onefile','--name='+name,'--clean'])
-        except ImportError:print("PyInstaller missing.")
+            # Ensure clean workspace
+            buildPath.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Build initiated. Working directory: {os.getcwd()}")
+            dPath = buildPath / "dist"
+            wPath = buildPath / "work"
+
+            # Note: PyInstaller's --key argument for bytecode encryption was removed in v6.0+.
+            # Generating a unique key here for potential future use or other obfuscation methods.
+            obfuscation_key = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+            logger.debug(f"Generated build-specific obfuscation key: {obfuscation_key}")
+
+            logger.warning("ENCRYPTION LIMITATION: PyInstaller 6.0+ has removed native bytecode encryption (--key).")
+            logger.warning("Manual obfuscation (e.g., PyArmor) is required for source code protection.")
+
+            # Aggressive exclusions to remove GUI (tkinter/tcl), tests, and development bloat
+            exclusions = [
+                "tkinter", "tcl", "tk", "_tkinter", "unittest", "pydoc", "xml", "distutils", 
+                "setuptools", "sqlite3", "test", "lib2to3", "pydoc_data", "curses"]
+            cArgs = [
+                str(Path(sys.argv[0]).resolve()), 
+                '--onefile', 
+                '--name=' + name, 
+                '--clean',
+                '--strip',               # Remove symbol tables to reduce forensic footprint
+                # '--key=' + obfuscation_key, # Removed: Bytecode encryption via --key is deprecated in PyInstaller v6.0+
+                '--noupx',               # UPX packing is a common indicator of compromise; avoid it
+                '--distpath', str(dPath),
+                '--workpath', str(wPath),
+                '--specpath', str(buildPath)]
+            
+            if verbose:
+                cArgs.append('--log-level=DEBUG')
+                logger.debug("Verbosity enabled for PyInstaller build process.")
+
+            for mod in exclusions: cArgs.extend(['--exclude-module', mod])
+
+            # Bundle certificates for portable execution
+            keys_dir = Path(".baelKeys")
+            if bundle_keys and keys_dir.exists():
+                abs_keys = keys_dir.resolve()
+                logger.info(f"Bundling certificates from {abs_keys}")
+                # Using absolute path for source to prevent PyInstaller from looking relative to --specpath
+                cArgs.extend(['--add-data', f'{abs_keys}:.baelKeys'])
+            else:
+                logger.warning(f"Certificate directory {keys_dir} not found. Proceeding without bundled keys.")
+
+            logger.info(f"Starting PyInstaller build process for: {name}")
+            logger.debug(f"Workspace: {buildPath.absolute()}")
+            logger.debug(f"PyInstaller command arguments: {cArgs}")
+            PyInstaller.__main__.run(cArgs)
+            logger.info(f"PyInstaller build process completed successfully for: {name}")
+            logger.info(f"Build complete. Binary located in: {dPath}/")
+        except ImportError: logger.error("PyInstaller missing. Install with: pip install pyinstaller")
+        except Exception as e: logger.error(f"Build failed: {e}")
+
+class ShortHelpAction(argparse.Action):
+    def __init__(self, option_strings, dest, nargs=0, **kwargs):
+        super(ShortHelpAction, self).__init__(option_strings, dest, nargs=nargs, **kwargs)
+    def __call__(self, parser, namespace, values, option_string=None):
+        message = [
+            f"\x1b[34m\x1b[1mBael v{__version__} - Minimal Help\x1b[0m",
+            "usage: baelV015.py [-h] [--help] [--mode {server,client,tun,keygen,build,encode-dns}] [--verbose] [--legacy] [options]",
+            "",
+            "Modes:",
+            "  --mode tun          L3 VPN Tunnel (Requires Root)",
+            "  --mode server       L4 Relay Server",
+            "  --mode client       L4 Relay Client",
+            "  --mode keygen       Generate PKI certificates",
+            "  --mode build        Compile to standalone binary",
+            "  --mode encode-dns   Obfuscate config for DNS",
+            "",
+            "Common Options:",
+            "  --config <file>     Path to JSON config",
+            "  --gen-config        Interactive config wizard",
+            "  --remote <host:port> Remote peer address",
+            "  --listen <host:port> Local bind address",
+            "  --verbose           Enable debug logging",
+            "",
+            "Use --help for full documentation and examples."
+        ]
+        print("\n".join(message))
+        parser.exit()
 
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(
         description="Bael v0.1.5 mTLS Orchestrator\n\nA high-performance, stealth-focused L3/L4 relay utilizing mutual TLS and native TUN interfaces.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
         epilog="""
 Operational Examples:
   [+] PKI Setup:
@@ -228,7 +365,10 @@ The DNS obfuscation is machine-bound; the target hostname must match exactly for
         """
     )
     core = p.add_argument_group("Core Mode Options")
+    core.add_argument("-h", action=ShortHelpAction, help="Show minimal help message.")
+    core.add_argument("--help", action="help", help="Show full documentation and examples.")
     core.add_argument("--mode",choices=["server","client","tun","keygen","build","encode-dns"],required=False, help="Operation mode: 'server'/'client' (L4), 'tun' (L3), 'keygen' (PKI setup), 'build' (binary), or 'encode-dns' (obfuscation).")
+    core.add_argument("--verbose",action="store_true",help="Enable verbose logging.")
     core.add_argument("--legacy",action="store_true",help="Force legacy Layer 4 relay logic instead of native Layer 3 TUN interface functionality.")
 
     net = p.add_argument_group("Network Configuration")
@@ -252,6 +392,7 @@ The DNS obfuscation is machine-bound; the target hostname must match exactly for
     pki.add_argument("--cert", metavar="FILE", help="Path to the TLS public certificate (.crt).")
     pki.add_argument("--key", metavar="FILE", help="Path to the private TLS key (.key).")
     pki.add_argument("--ca", metavar="FILE", help="Path to the CA certificate for mutual TLS verification.")
+    pki.add_argument("--no-bundle", action="store_false", dest="bundle_keys", default=True, help="Disable bundling of certificates in the binary.")
     pki.add_argument("--whitelist", metavar="CIDR", help="Comma-separated IP/CIDR ranges allowed to connect (Server mode only).")
     pki.add_argument("--map", metavar="FILE", help="JSON mapping of incoming SNI hostnames to target backend addresses (Server mode only).")
 
@@ -329,7 +470,7 @@ if __name__=="__main__":
         print(f"\n[+] Obfuscated DNS TXT Record (Machine-Bound to {args.target_hostname}):\n{res}\n")
         sys.exit(0)
     if args.mode=="build":
-        Bael.buildExecutable("bael_legacy" if args.legacy else "bael_core");sys.exit(0)
+        Bael.buildExecutable("bMTLSTUN0_LEGACY" if args.legacy else "bMTLSTUN0", verbose=args.verbose, bundle_keys=args.bundle_keys);sys.exit(0)
     if args.legacy:
         if not all([args.cert,args.key,args.ca]):logger.error("Legacy requires --cert --key --ca");sys.exit(1)
         legacy=BaelLegacy(args)
