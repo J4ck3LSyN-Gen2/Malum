@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import asyncio,ssl,argparse,random,os,logging,sys,json,socket,subprocess,ipaddress
-import string,fcntl,struct,time,signal,base64,hashlib
+import string,fcntl,struct,time,signal,base64,hashlib,colorama
 from pathlib import Path
 from collections import deque
 from typing import Tuple,Optional,Deque,Dict,List,Any
 from prometheus_client import start_http_server,Counter,Gauge
-
 class BaelFormatter(logging.Formatter):
     COLORS = {logging.DEBUG: "\x1b[38;2;120;120;120m\x1b[1m",logging.INFO: "\x1b[34m\x1b[1m",logging.WARNING: "\x1b[33m\x1b[1m",logging.ERROR: "\x1b[31m",logging.CRITICAL: "\x1b[31m\x1b[1m"}
     RESET = "\x1b[0m"
@@ -280,7 +279,6 @@ if __name__=="__main__":
         sys.exit(0)
     if args.mode=="build":
         Bael.buildExecutable("bael_legacy" if args.legacy else "bael_core");sys.exit(0)
-
     if args.legacy:
         if not all([args.cert,args.key,args.ca]):logger.error("Legacy requires --cert --key --ca");sys.exit(1)
         legacy=BaelLegacy(args)
@@ -297,14 +295,12 @@ if __name__=="__main__":
                 "certFile": args.cert,"keyFile": args.key,"caFile": args.ca,
                 "mode": "server" if args.mode=="server" else "client"
             })
-        
         tool=Bael(conf)
         if args.dns_lookup:
             txt=tool.resolveDnsTxt(args.dns_lookup)
             if txt:
                 try:conf.update(json.loads(txt))
                 except:logger.info(f"DNS TXT: {txt}")
-        
         if args.mode=="server":
             # Simplified server for TUN mode
             async def tun_server():
