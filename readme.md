@@ -25,7 +25,10 @@
     - [About Nephila](#about-nehphila)
     - [Notices](#nephila-notices)
     - [Usage](#nephila-usage)
-
+- [Bael](#Bael)
+    - [About Bael](#about-bael)
+    - [Notices](#bael-notices)
+    - [Usage](#bael-usage)
 
 ## Setup & Installation
 
@@ -567,7 +570,7 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 
 Amon is primarily run as a standalone DNS server via CLI, but can also be imported as a library.
 <p align="center">
-  <img src="imgs/amonUsage.png">
+  <img src="imgs/amonUsageNew.png">
 </p>
 
 ### Amon Core Features
@@ -601,6 +604,8 @@ Amon is primarily run as a standalone DNS server via CLI, but can also be import
 * `--log-file <file>`: Custom log file name/path.
 * `--no-file-log`: Disable file logging.
 * `--verbosity`: Control console output verbosity.
+
+
 
 ## Credits
 
