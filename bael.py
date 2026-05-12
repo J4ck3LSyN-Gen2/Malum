@@ -217,6 +217,9 @@ Operational Examples:
   [+] L4 Relay Server (SNI Mapping):
       %(prog)s --mode server --listen 0.0.0.0:443 --map routes.json --cert srv.crt --key srv.key --ca ca.crt
 
+  [+] Interactive Config:
+      %(prog)s --gen-config
+
   [+] Obfuscated DNS Beacon Generation:
       %(prog)s --mode encode-dns --encode-str '{"remoteHost":"1.2.3.4"}' --target-hostname workstation-01
 
@@ -225,7 +228,7 @@ The DNS obfuscation is machine-bound; the target hostname must match exactly for
         """
     )
     core = p.add_argument_group("Core Mode Options")
-    core.add_argument("--mode",choices=["server","client","tun","keygen","build","encode-dns"],required=True, help="Operation mode: 'server'/'client' (L4), 'tun' (L3), 'keygen' (PKI setup), 'build' (binary), or 'encode-dns' (obfuscation).")
+    core.add_argument("--mode",choices=["server","client","tun","keygen","build","encode-dns"],required=False, help="Operation mode: 'server'/'client' (L4), 'tun' (L3), 'keygen' (PKI setup), 'build' (binary), or 'encode-dns' (obfuscation).")
     core.add_argument("--legacy",action="store_true",help="Force legacy Layer 4 relay logic instead of native Layer 3 TUN interface functionality.")
 
     net = p.add_argument_group("Network Configuration")
@@ -251,7 +254,52 @@ The DNS obfuscation is machine-bound; the target hostname must match exactly for
     pki.add_argument("--ca", metavar="FILE", help="Path to the CA certificate for mutual TLS verification.")
     pki.add_argument("--whitelist", metavar="CIDR", help="Comma-separated IP/CIDR ranges allowed to connect (Server mode only).")
     pki.add_argument("--map", metavar="FILE", help="JSON mapping of incoming SNI hostnames to target backend addresses (Server mode only).")
+
+    gen = p.add_argument_group("Configuration Generation")
+    gen.add_argument("--gen-config", action="store_true", help="Launch interactive wizard to generate a JSON configuration file for native TUN mode. Example: python3 baelV015.py --gen-config")
+    
     return p
+
+def generate_config_interactive():
+    """Launches an interactive wizard to generate a JSON configuration for Bael."""
+    print(f"\n{colorama.Fore.CYAN}--- Bael Interactive Configuration Wizard ---{colorama.Fore.RESET}")
+    try:
+        config = {}
+        mode = input("[?] Operation Mode (client/server) [client]: ").strip().lower() or "client"
+        config['mode'] = mode
+
+        if mode == "server":
+            config['listenHost'] = input("[?] Listen Address [0.0.0.0]: ").strip() or "0.0.0.0"
+            config['listenPort'] = int(input("[?] Listen Port [443]: ").strip() or 443)
+        else:
+            config['remoteHost'] = input("[?] Remote Peer Address (IP or Domain): ").strip()
+            try:
+                config['remotePort'] = int(input("[?] Remote Peer Port [443]: ").strip() or 443)
+            except ValueError:
+                config['remotePort'] = 443
+
+        config['tunName'] = input("[?] TUN Interface Name [bael0]: ").strip() or "bael0"
+        config['tunIp'] = input("[?] Virtual TUN IP [10.8.0.1]: ").strip() or "10.8.0.1"
+        config['tunMask'] = input("[?] Virtual TUN Mask [255.255.255.0]: ").strip() or "255.255.255.0"
+        try:
+            config['retryInterval'] = int(input("[?] Reconnect Interval (seconds) [2]: ").strip() or 2)
+            config['jitter'] = float(input("[?] Reconnect Jitter (0.0-1.0) [0.2]: ").strip() or 0.2)
+        except ValueError:
+            config['retryInterval'] = 2
+            config['jitter'] = 0.2
+        config['mTLS'] = input("[?] Enable mutual TLS (mTLS)? (y/n) [y]: ").strip().lower() != 'n'
+        if config['mTLS']:
+            config['certFile'] = input("[?] Path to Certificate (.crt): ").strip()
+            config['keyFile'] = input("[?] Path to Private Key (.key): ").strip()
+            config['caFile'] = input("[?] Path to CA Certificate (.crt): ").strip()
+        config['logLevel'] = input("[?] Log Level (DEBUG/INFO/WARNING/ERROR) [INFO]: ").strip().upper() or "INFO"
+        filename = input("[?] Save configuration as [tun_settings.json]: ").strip() or "tun_settings.json"
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=4)
+        logger.info(f"Configuration successfully written to {filename}")
+    except KeyboardInterrupt:
+        print("\n[!] Wizard aborted.")
+        sys.exit(0)
 
 def genkeys(args):
     keysRoot=Path(".baelKeys");keysRoot.mkdir(exist_ok=True)
@@ -267,6 +315,9 @@ def genkeys(args):
 
 if __name__=="__main__":
     args=build_parser().parse_args()
+    if args.gen_config:
+        generate_config_interactive()
+        sys.exit(0)
     if args.mode=="keygen":genkeys(args);sys.exit(0)
     if args.mode=="encode-dns":
         if not args.encode_str or not args.target_hostname:
@@ -288,27 +339,33 @@ if __name__=="__main__":
         conf={"logLevel":"INFO","maxRetries":5,"retryInterval":2,"jitter":0.2,"mTLS":True,"mode":"client","tunName":"bael0"}
         if args.config and os.path.exists(args.config):
             with open(args.config,'r') as f:conf.update(json.load(f))
-        elif args.mode=="tun":
+        
+        if not args.config and args.mode=="tun":
             conf.update({
                 "remoteHost": args.remote.split(":")[0] if args.remote else None,
                 "remotePort": int(args.remote.split(":")[1]) if args.remote and ":" in args.remote else 443,
                 "certFile": args.cert,"keyFile": args.key,"caFile": args.ca,
                 "mode": "server" if args.mode=="server" else "client"
             })
+            
         tool=Bael(conf)
         if args.dns_lookup:
             txt=tool.resolveDnsTxt(args.dns_lookup)
             if txt:
                 try:conf.update(json.loads(txt))
                 except:logger.info(f"DNS TXT: {txt}")
-        if args.mode=="server":
+        
+        effective_mode = args.mode or conf.get("mode")
+        if effective_mode=="server":
             # Simplified server for TUN mode
             async def tun_server():
                 tool.validatePrivileges();tool.setupTun()
                 async def handle_tun(r,w):
                     logger.info("Inbound L3 Tunnel verified.")
                     await asyncio.gather(tool.bridge(r,w,True),tool.bridge(r,w,False))
-                server=await asyncio.start_server(handle_tun,args.listen.split(":")[0],int(args.listen.split(":")[1]),ssl=tool.sslContext)
+                l_host = conf.get("listenHost", args.listen.split(":")[0])
+                l_port = int(conf.get("listenPort", args.listen.split(":")[1]))
+                server=await asyncio.start_server(handle_tun,l_host,l_port,ssl=tool.sslContext)
                 async with server:await server.serve_forever()
             try:asyncio.run(tun_server())
             except KeyboardInterrupt:pass
