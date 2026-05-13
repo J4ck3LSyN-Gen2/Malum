@@ -208,6 +208,17 @@ class Bael:
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
 
+    def _isAlive(self,host:Tuple[str,int]):
+        try:
+            self.logger.info(f"> Testing host {host[0]}:{host[1]}")
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            out = s.connect_ex((host[0], host[1]))
+            return True if out == 0 else False
+        except Exception as e:
+            self.logger.warning(f"- Exception caught on attempted connection to host ({str(host[0])}:{str(host[1])}): {str(e)}")
+            return False
+
     def _signal_handler(self, signum, frame):
         self.logger.info(f"Received signal {signum}, performing cleanup...")
         self.destroyTun()
