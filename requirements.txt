@@ -8,6 +8,7 @@ certifi==2025.11.12
 cffi==2.0.0
 charset-normalizer==3.4.4
 colorama==0.4.6
+cryptography==48.0.0
 curl_cffi==0.14.0
 dnslib==0.9.26
 dnspython==2.8.0
