@@ -48,7 +48,7 @@ try:
 except ImportError:
     CRYPTO_AVAILABLE = False
 
-__version__ = "0.2.4"
+__version__ = "0.2.3"
 __author__ = "J4ck3LSyN"
 
 # ====================== LOGGING ======================
@@ -1023,8 +1023,8 @@ def genkeys(args):
     except Exception as e: logger.error(f"Keygen failed: {e}")
 
 def privkey(args):
-    if args.key == "tWQLh/dj.HI/B2P#4/m#L6h/tV":
-        pass
+    charset = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(random.choice(charset) for _ in range(args.kg_priv))
 
 def main():
     p = argparse.ArgumentParser(description=f"Bael v{__version__} — Encrypted mTLS C2")
@@ -1034,6 +1034,7 @@ def main():
     p.add_argument("--bl-name", default="bMTLSTUN0")
     # Keygen
     p.add_argument("--kg-out", default=".baelKeys")
+    p.add_argument("--kg-priv",type=int,default=32,help="(Overides --key) Generates and uses a private key by desired length.")
     # Connections
     p.add_argument("--lhost", default="0.0.0.0:443")
     p.add_argument("--remote", type=str, help="C2 host:port")
@@ -1057,6 +1058,10 @@ def main():
     
     args = p.parse_args()
     logger.setLevel(args.log_lvl.upper())
+    if args.kg_priv:
+        key = privkey(args)
+        logger.info("[DO NOT SHARE] <======== `%s` ========>", key)
+        args.key = key
     if args.mode == "keygen":
         genkeys(args);return
     # Embed assets before build or runtime
