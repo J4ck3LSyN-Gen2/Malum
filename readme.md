@@ -5,6 +5,8 @@
 ![Offensive Security](https://img.shields.io/badge/Offensive%20Security-magenta)
 ![Alien Generation 2 Verion 0.2.1](https://img.shields.io/badge/Alien%20Generation%202-0.2.1-brightgreen)
 
+> _NOTE:_ I will be re-branding Malum for a more `professional` type of look, I will continue the theme for the main things, however I wish to append this to my resume soon...
+
 ## About
 
 <p align="center">
@@ -108,7 +110,7 @@
 
 - [About Andras](#about-andras)
   - [Core Features](#andras-core-features)
-- [Notces](#andras-notices)
+- [notices](#andras-notices)
 - [Usage](#andras-usage)
   - [Command-Line Interface (CLI)](#andras-command-line-interface-cli)
     - [X/Twitter Interaction](#andras-xtwitter-interaction)
