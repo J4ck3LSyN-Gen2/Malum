@@ -649,8 +649,6 @@ If any single domain label exceeds an entropy score of `4.5` or exceeds __45 cha
 
 ## Bael
 
----
-
 ### About Bael
 
 **Bael** is a high-performance, secure Command & Control (C2) and post-assessment framework optimized for the Linux ecosystem. It facilitates resilient remote administration and security control validation through encrypted tunnels and advanced system call orchestration.
