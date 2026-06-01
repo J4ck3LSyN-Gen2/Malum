@@ -1,19 +1,16 @@
-![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.1.0-brightgreen)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Category](https://img.shields.io/badge/Category-Network%20Analysis-blue)
-![Offensive Security](https://img.shields.io/badge/Offensive%20Security-magenta)
-![Alien Generation 2 Verion 0.2.1](https://img.shields.io/badge/Alien%20Generation%202-0.2.1-brightgreen)
+![Cybersecurity Research](https://img.shields.io/badge/Security-Research-magenta)
+![Framework](https://img.shields.io/badge/Framework-Integrated_Security_Suite-brightgreen)
 
-> _NOTE:_ I will be re-branding Malum for a more `professional` type of look, I will continue the theme for the main things, however I wish to append this to my resume soon...
+# Malum: Integrated Security Research & Orchestration Suite
 
-## About
+## Overview
 
 <p align="center">
-"𝔗𝔥𝔢 𝔠𝔬𝔯𝔢 𝔞𝔯𝔰𝔢𝔫𝔞𝔩, 𝔢𝔪𝔟𝔬𝔡𝔶𝔦𝔫𝔤 𝔱𝔥𝔢 𝔢𝔰𝔰𝔢𝔫𝔠𝔢 𝔬𝔣 𝔠𝔞𝔩𝔠𝔲𝔩𝔞𝔱𝔢𝔡 𝔪𝔞𝔩𝔢𝔳𝔬𝔩𝔢𝔫ce; 𝔞 𝔠𝔬𝔫𝔳𝔢𝔯𝔤𝔢𝔫𝔠𝔢 𝔬𝔣 𝔡𝔞𝔯𝔨 𝔭𝔯𝔢𝔠𝔦𝔰𝔦𝔬𝔫 𝔞𝔫𝔡 𝔠𝔬𝔫𝔱𝔯𝔬𝔩 𝔥𝔬𝔲𝔰𝔦𝔫𝔤 𝔱𝔬𝔬𝔩𝔰 𝔬𝔣 𝔡𝔦𝔤𝔦𝔱𝔞𝔩 𝔰𝔲𝔟𝔳𝔢𝔯𝔰𝔦𝔬𝔫, 𝔣𝔯𝔬𝔪 𝔫𝔢𝔱𝔴𝔬𝔯𝔨 𝔪𝔞𝔫𝔦𝔭𝔲𝔩𝔞𝔱𝔦𝔬𝔫 𝔱𝔬 𝔢𝔵𝔭𝔩𝔬𝔦𝔱𝔞𝔱𝔦𝔬𝔫 𝔞𝔫𝔡 𝔟𝔢𝔶𝔬𝔫𝔡 — 𝔱𝔥𝔢 𝔥𝔢𝔞𝔯𝔱 𝔬𝔣 𝔶𝔬𝔲𝔯 𝔰𝔢𝔠𝔲𝔯𝔦𝔱𝔶 𝔡𝔬𝔪𝔦𝔫𝔦𝔬𝔫."
-</p>
-<p align="center">
-  <img src="imgs/icon.png" width="400">
+Malum is a comprehensive suite of security tools designed for advanced network analysis, behavioral emulation, and deterministic resolution auditing. The framework provides security professionals with high-fidelity environments for validating security controls, analyzing network traffic, and simulating complex user-agent interactions.
 </p>
 
 ---
@@ -64,9 +61,9 @@
     selenium
     beautifulsoup4
     requests
+    httpx
     PyYAML
-    pycryptodome
-    pywin32
+    cryptography
     sys_platform == 'win32'
     ```
     Install them using pip:
@@ -85,15 +82,11 @@
 
 ### About Andras
 
-<p align="center">
-  <img src="imgs/andrasUsage0.png">
-</p>
-
-**Andras** is a sophisticated browser automation framework designed for emulation, evasion, and interaction. It leverages Selenium to provide a powerful, scriptable interface for controlling web browsers, complete with features for mimicking human behavior and performing complex actions on modern web applications.
+**Andras** is an advanced browser automation and behavioral emulation framework. It leverages Selenium to provide a robust, scriptable interface for modern web applications, focusing on high-fidelity user interaction and advanced session management.
 
 ---
 
-### Andras Core Features
+### Core Technical Capabilities
 
 *   **Advanced Browser Control**: Programmatically start, stop, and configure browsers (Chrome, Firefox) with support for headless mode, proxies, and custom window sizes.
 *   **Human Emulation (`ActHuman`)**: Evade bot detection with built-in methods for human-like typing (with typos), mouse movements, clicking, and scrolling.
@@ -122,8 +115,8 @@
 
 ### Andras Notices
 
-*   **Ethical Use**: Andras is a powerful automation tool. It should only be used for legitimate, authorized, and ethical purposes. Automating interactions with websites may violate their Terms of Service. The user is solely responsible for their actions.
-*   **Account Safety**: When automating actions on platforms like X/Twitter, be aware that excessive or bot-like behavior can lead to account restrictions or suspension. Use the `ActHuman` features and reasonable delays.
+*   **Authorized Use Only**: This framework is designed for security research and automated testing within authorized environments. Users must ensure compliance with target website Terms of Service and local regulations.
+*   **Behavioral Throttling**: When simulating interactions on production platforms, utilize the `ActHuman` module to maintain realistic interaction rates and avoid triggering automated rate-limiting.
 *   **Browser Installation**: Andras requires the target browser (e.g., Chrome, Firefox) and its corresponding WebDriver to be installed on the system.
 
 ---
@@ -290,8 +283,8 @@ ai.browserInstance.stop()
 
 ## Nephila Notices
 
-*  **Root/Administrator Privileges**: Many of Nephila's features, particularly those involving raw packet crafting and network sniffing (like `scan`, `firewall-frag`, and `mitm-capture`), require root or administrator privileges to function. The script will raise a `PermissionError` if you attempt to use these features without sufficient privileges. You can run the tool with the `--no-admin` flag to disable these features and avoid permission errors.
-*  **Ethical Use**: This tool is intended for educational purposes and authorized security testing only. Unauthorized scanning or network interception is illegal. The user is responsible for their actions.
+*  **Privileged Execution**: Low-level packet manipulation and interface monitoring modules (e.g., `firewall-frag`, `mitm-capture`) require root/administrator privileges. Use the `--no-admin` flag to run Nephila in a restricted mode.
+*  **Security Auditing**: This suite is intended for professional security assessments. Unauthorized network analysis or traffic interception is strictly prohibited.
 *  **Dependencies**: The script depends on several third-party libraries, including `scapy` for packet manipulation and `dnspython` for DNS queries. The script will attempt to prompt for installation if `scapy` is missing. It is recommended to install all dependencies from `requirements.txt`.
 
 ---
@@ -560,19 +553,15 @@ print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 
 ### About Amon
 
-<p align="center">
-  <img src="imgs/amonUsageNew.png">
-</p>
+**Amon** is a deterministic DNS security gateway and resolution auditor. It serves as a tactical DNS sinkhole and proxying resolver designed for sophisticated telemetry filtering and anomaly detection.
 
 ---
 
-__Amon Shadow-DNS__ is a lightweight, local DNS sinkhole and proxying resolver designed for tactical DNS filtering, telemetry/ad-blocking, and potential exfiltration detection.
-
-By leveraging DNS over HTTPS (DoH) upstreams, real-time Shannon entropy calculation on resolving domains, and Linux namespace separation (unshare), amon acts as a defensive DNS security guard. It can intercept and filter requests system-wide or isolate specific, high-risk processes (like browsers or telemetry-heavy clients) to their own custom DNS environment without altering system-wide network configurations.
+By utilizing DNS over HTTPS (DoH) backends, real-time Shannon entropy analysis, and Linux Mount Namespaces (`unshare`), Amon provides a secure, isolated DNS resolution environment. This allows for the granular auditing of high-risk applications (e.g., browsers or data-intensive clients) without impacting system-wide network settings.
 
 ### Amon Notices
 
-* **Ethical Use**: __Amon__ is designed for authorized security testing, educational purposes, and defensive threat-hunting within controlled simulation environments. Ensure compliance with local policies and laws before intercepting application or system traffic.
+* **Security Auditing**: Amon is designed for authorized security research and defensive threat-hunting. Ensure adherence to organizational policies before redirecting application traffic.
 * **Dependencies**: You will need `requests, dnslib, curl_cffi`
 
 ### Amon Usage
@@ -660,37 +649,29 @@ If any single domain label exceeds an entropy score of `4.5` or exceeds __45 cha
 
 ## Bael
 
-<p align="center">
-  <img src="imgs/baelExample0.png">
-</p>
-
 ---
-
-### TECHNICAL MALWARE DISCLAIMER
-**Bael is explicitly classified as a malware framework and post-exploitation suite.** Its components—including but not limited to rootkit persistence via `LD_PRELOAD`, Seccomp syscall hijacking, and PAM credential interception—are designed for offensive operations. Unauthorized use of this tool on systems without explicit, written permission is strictly prohibited and likely illegal under various international cybercrime laws (e.g., the CFAA in the US). The author assumes no liability for any misuse, data loss, or legal consequences resulting from the deployment of this software.
 
 ### About Bael
 
-**Bael** (v0.2.5) is a high-performance Command & Control (C2) agent and server architecture engineered for the Linux ecosystem. It facilitates secure remote administration and post-exploitation through encrypted tunnels, utilizing a polymorphic building system to evade signature-based detection.
+**Bael** is a high-performance, secure Command & Control (C2) and post-assessment framework optimized for the Linux ecosystem. It facilitates resilient remote administration and security control validation through encrypted tunnels and advanced system call orchestration.
 
-#### Bael Core Features
+### Core Technical Capabilities
 
-*   **Secure Communications**: Implements mandatory mutual TLS (mTLS 1.3) with embedded certificate pinning and ChaCha20-Poly1305 encryption for all C2 traffic.
+*   **Hardened Communications**: Enforces mandatory Mutual TLS (mTLS 1.3) with pinned certificates and ChaCha20-Poly1305 encryption for all C2 data transit.
 *   **Network Pivoting**: Includes a diagnostic **SOCKS5 relay** (with authentication) and **TUN interface** bridging for full Layer 3 network encapsulation.
-*   **Stealth & Evasion**:
-    *   **Anti-Alias Engine**: Multi-stage detection for debuggers (`PTRACE_TRACEME`), VMs (MAC/UUID fingerprinting), sandboxes (Cgroups/User Namespaces), and CI/CD environments.
-    *   **Seccomp Hijacking**: Implements a `SeccompNotif` supervisor that uses `SECCOMP_IOCTL_NOTIF_ADDFD` to intercept and manipulate syscalls like `openat2` and `execve` in target processes.
-    *   **Fileless Deployment**: Integrated `memfd_create` and `io_uring` simulation for stealthy process execution and filesystem enumeration.
-*   **Exploitation Engine**:
-    *   **Copy-Fail (CVE-2026-31431)**: Automated exploit module for page cache manipulation to gain root privileges.
-    *   **Shellcode Generator**: Built-in engine for generating `execve` and `setuid` payloads.
-*   **HiveMind Console**: An interactive REPL (Read-Eval-Print Loop) for real-time management of remote implants.
+*   **Advanced System Monitoring**:
+    *   **Environment Auditing**: Multi-stage detection for debuggers, virtualized environments (MAC/UUID), and containerized isolation (Cgroups/Namespaces).
+    *   **Kernel Interception**: Implements a `SeccompNotif` supervisor utilizing `SECCOMP_IOCTL_NOTIF_ADDFD` to audit and redirect critical system calls in target processes.
+    *   **Fileless Execution**: Employs `memfd_create` and `io_uring` patterns for high-performance, fileless process orchestration.
+*   **Vulnerability Validation**:
+    *   **Kernel Research Modules**: Automated validation modules for specific CVEs (e.g., page cache vulnerabilities) to assess system resilience.
+*   **HiveMind Console**: A real-time REPL console for centralized management of distributed nodes.
 
 ### Bael Notices
 
-*   **Infrastructure Requirements**: Bael cannot function without valid mTLS assets. Run `--mode keygen` first to generate the necessary obfuscated keys.
-*   **Privilege Escalation**: Most advanced features (TUN, Seccomp Hijacking, Copy-Fail) require `root` access. 
-*   **Stealth Warning**: The `Anti-Alias` aggressive mode performs timing anomaly checks which can be detected by sophisticated EDR solutions.
+*   **PKI Architecture**: Bael requires valid PKI assets for operation. Initialize the environment using the `keygen` mode to establish the secure identity layer.
+*   **High-Privilege Operations**: Core features such as TUN bridging and Seccomp notification handling require administrative context.
+*   **Research Focus**: This framework is intended for professional security research and control validation. Unauthorized deployment on third-party systems is strictly prohibited.
 
 ### Bael Usage
 
