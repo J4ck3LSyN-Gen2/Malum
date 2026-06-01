@@ -742,7 +742,7 @@ bael> /logging session_capture.log
 
 
 *   **Author**: J4ck3LSyN
-*   **Version**: 0.1.0
+*   **Version**: 1.1.0
 *   **License**: MIT
 
 ---
